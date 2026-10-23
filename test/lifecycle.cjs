@@ -1135,6 +1135,26 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     'column order is # · time · first token · speed · tokens · total · amortised',
     headCells.map((cell) => normalize(textOf(cell))).join('|') === '#|时间|首字|速度|输出 Token|总用时|折算速度',
   )
+  assert(
+    'the English headers are abbreviated to fit a digit-sized column',
+    /*
+     * Columns are measured from the status pill's digits, so a long label would either
+     * ellipsize ("First t…") or force the column wider and break that alignment. Wrapping
+     * was tried and looked ragged beside the single-line headers. The labels are kept
+     * short instead; this pins the English set so a future edit cannot quietly
+     * reintroduce a truncating one.
+     */
+    (() => {
+      const previous = activeLocale
+      activeLocale = 'en'
+      const english = localeStub.bind('dsh-recent-usage-metrics')
+      const headers = ['colIndex', 'colTime', 'colTtft', 'colSpeed', 'colTokens', 'colTotal', 'colAmortized']
+        .map((key) => english(key))
+      activeLocale = previous
+      const short = headers.every((label) => label.length <= 9)
+      return short && headers.join('|') === '#|At|TTFT|Speed|Tokens|Time|Amortised'
+    })(),
+  )
 
   let itemRows = findAll(statusTree, (el) => String(el.props.className ?? '').includes('dsh-rum-item'))
   assert('the drawer lists ten rows', itemRows.length === 10)

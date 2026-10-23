@@ -99,7 +99,7 @@ numbers), the `--dsw-menu-backdrop-filter` 40px/150% blur, `--dsw-elevation-prom
 stroke and shadow, `--dsw-radius-lg`, and 16px padding. It lists the last ten requests,
 newest first, with no explanatory footer:
 
-| # | Time | First token | Speed | Output tokens | Total | Amortised |
+| # | At | TTFT | Speed | Tokens | Time | Amortised |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 18:42:07 | 2.3 s | 445 tok/s | 1024 tok | 4.6 s | 223 tok/s |
 

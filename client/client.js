@@ -124,11 +124,21 @@ window.__ModuleLoader__.load({
       drawerEmpty: 'No completed requests yet. Send a message and its metrics appear here.',
       drawerLive: 'Streaming',
       colIndex: '#',
-      colTime: 'Time',
-      colTtft: 'First token',
+      colTime: 'At',
+      /*
+       * Headers are kept to 4-5 characters because each column is only as wide as the
+       * pill's digits plus the unit beside them (about 38px at the 11px header size).
+       * Widening a column to fit a longer word would break the alignment with the status
+       * row, and wrapping looked ragged next to the single-line headers.
+       *
+       * The clock reading is `At` ("when it ran") and the elapsed span is `Time`, so the
+       * two are never confused. `TTFT` and `Tokens` are the terms this audience already
+       * reads; `Speed` and `Amortised` fit as they are.
+       */
+      colTtft: 'TTFT',
       colSpeed: 'Speed',
-      colTokens: 'Output tokens',
-      colTotal: 'Total',
+      colTokens: 'Tokens',
+      colTotal: 'Time',
       colAmortized: 'Amortised',
       averageOf: 'avg of {count}',
       justNow: 'just now',

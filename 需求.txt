@@ -764,17 +764,33 @@ ctx.get('locale') 返回 undefined，而 `if (locale !== undefined)` 把注册�
                                                                          No completed requests yet. Send a message and its metrics appear here.
   drawerLive           生成中                                            Streaming
   colIndex             #                                                 #
-  colTime              时间                                              Time
-  colTtft              首字                                              First token
+  colTime              时间                                              At
+  colTtft              首字                                              TTFT
   colSpeed             速度                                              Speed
-  colTokens            输出 Token                                        Output tokens
-  colTotal             总用时                                            Total
+  colTokens            输出 Token                                        Tokens
+  colTotal             总用时                                            Time
   colAmortized         折算速度                                          Amortised
   averageOf            平均 {count} 条                                   avg of {count}
   justNow              刚刚                                              just now
   secondsAgo           {count} 秒前                                      {count}s ago
   minutesAgo           {count} 分钟前                                    {count}m ago
   hoursAgo             {count} 小时前                                    {count}h ago
+
+  【英文字头必须短，最多 4-5 个字符】
+  每列宽度 = 气泡里该格的实测宽度 = 数字（4.5ch）+ 单位（" s" 2ch），
+  约 38px；表头字号 11px。所以 "First token"（11 字符）和 "Output tokens"（13 字符）
+  必然被 text-overflow 截断成 "First t…" / "Output to…"，"Duration"（8 字符，约 43px）
+  也装不下。
+  三个不要：不要加宽列（会破坏与状态栏的对齐）、不要折两行（与单行表头参差不齐）、
+  不要让表头溢出到邻列。
+  最终命名：
+    colTime    → At         （钟点时间。"Time" 留给下面的时长列，避免两个都叫时间）
+    colTtft    → TTFT       （首字时间在本领域的通用缩写，4 字符）
+    colSpeed   → Speed
+    colTokens  → Tokens
+    colTotal   → Time       （这次请求的持续时长）
+    colAmortized → Amortised（9 字符，这列的数字更宽，装得下）
+  中文表头（时间/首字/速度/输出 Token/总用时/折算速度）都装得下，不要改。
 
   【禁止】在组件里内联中文字符串；【禁止】用 navigator.language 自行判断语言。
 
