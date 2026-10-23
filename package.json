@@ -23,7 +23,8 @@
     "README.md",
     "README.en.md",
     "screenshots.json",
-    "assets/screenshot-1.png"
+    "assets/screenshot-1.png",
+    "assets/screenshot-2.png"
   ],
   "dsh": {
     "bundle": {
