@@ -1,0 +1,17 @@
+# Scratch space used while developing or debugging this plugin.
+.scratch/
+
+# Editor and OS noise.
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Node artefacts (the plugin ships plain JS, so none should appear).
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# Local environment overrides.
+.env
+.env.local

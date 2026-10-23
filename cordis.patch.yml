@@ -1,0 +1,8 @@
+# dsh-recent-usage-metrics bundle patch.
+#
+# One row: the plugin's whole surface is browser-side. The Host half exists so the
+# package is a Loader entry, which is what makes the Web GUI publish `./client`
+# into the boot graph.
+- insert:
+    - id: dsh-recent-usage-metrics
+      name: 'dsh-recent-usage-metrics'

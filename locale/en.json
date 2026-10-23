@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Geek request metrics",
+    "description": "Adds a Geek level to Performance & usage: a live TTFT / token-speed / token readout in the composer status row and a glass drawer listing the last 10 requests."
+  }
+}

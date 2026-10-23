@@ -1,0 +1,936 @@
+任务：给 DSH 桌面版写一个本地客户端插件 dsh-recent-usage-metrics，在「设置 → 通用 → 性能与用量」
+里增加第三个选项「极客」。选中后，输入区底部状态栏最左侧实时显示最新一次请求的极客级指标，
+并可点击展开一个磨砂玻璃抽屉，列出最近 10 次请求的完整指标。
+
+本文件是【已实现版本的完整规格】。照此文档实现，应得到一致的效果与行为。
+文档中给出的关键代码为最终生效代码，可直接使用。
+
+================================================================================
+一、最终效果（用户看到的样子，即验收标准）
+================================================================================
+
+1. 打开 DSH → 设置 → 通用 → 找到「性能与用量」这一行。
+   原本只有「简洁 / 详细」两项，现在下拉里有【三项】：简洁 / 详细 / 极客。
+
+2. 选中「极客」后，输入区下方状态栏的【最前面】（原生「55 轮 2307 步」气泡的左边）出现：
+
+       ⚡ 2.3 s   445 tok/s   1024 tok   4.6 s   223 tok/s
+
+   依次为：首字时间、实时生成速度、输出 Token、总用时、折算速度。
+   数字与单位之间有一个空格；数字之间【没有】任何分隔点（旧版用 · 分隔，已废弃）。
+
+3. 该气泡的高度、字号、亮度与原生气泡完全一致：
+   文字和图标都用 --dsw-alias-label-tertiary（原生气泡不给图标上色，不要自己加品牌色），
+   高度由 padding + line-height 自然撑开，不写死 height。
+
+4. 【关键】数字变化时气泡宽度绝对不变，整个状态栏不会左右抖动。
+   实现方式是每个数字用固定宽度槽位 + tabular-nums，详见第六节。
+
+5. 点击气泡 → 抽屉从状态栏【向上】弹出，右边缘与气泡右边缘对齐，磨砂玻璃质感，
+   深色模式下与原生统计弹窗完全同款材质。再次点击气泡 / 按 Esc / 点击外部 → 关闭。
+   【注意】只有点击能打开，没有悬停打开，气泡上也【没有】title 悬停提示。
+
+6. 抽屉内容：
+
+       ⚡ 最近请求指标                              最近 10 条
+       ─────────────────────────────────────────────────────
+       #   时间       首字    速度      输出 Token  总用时   折算速度
+       1   18:42:07   2.3 s   445 tok/s  1024 tok   4.6 s   223 tok/s
+       2   18:42:03   1.8 s   389 tok/s   902 tok   4.0 s   225 tok/s
+       ...（最多 10 行，最新在最上）
+       ─────────────────────────────────────────────────────
+       ⌀   平均 10 条  --      412 tok/s   951 tok   4.2 s   226 tok/s
+
+   列顺序固定为：# / 时间 / 首字 / 速度 / 输出 Token / 总用时 / 折算速度。
+   底部有一条分隔线，下面是【平均值行】，汇总当前可见的所有请求。
+
+7. 新请求完成时，它在顶部滑入；被挤掉的第 11 行【同帧消失】，不做淡出动画。
+   抽屉外框高度自始至终不变。（做过离场动画的版本会先长高一行再缩回，属缺陷，勿重现。）
+
+8. 生成中的请求在抽屉里显示为一条高亮的「生成中」行，位于历史上方；
+   气泡同时切换为 live 样式（闪电图标轻微脉冲）。
+
+9. 每列的空值显示 —（em dash）。首字时间在某些情况下确实不可得（见第八节），此时显示 —。
+
+10. 界面文案中英双语，跟随「设置 → 通用 → 语言」实时切换，无需重启。
+    所有文案来自 client.js 内的 zh / en 两份字典，组件里不得内联任何界面文字。
+
+11. 关闭极客（选回简洁 / 详细）后：气泡和抽屉立即消失，所有定时器停止。
+    这是日常「不想用」的正确做法。
+    【已知上游限制】在插件管理器里禁用本插件后，浏览器里已加载的客户端半【不会】卸载，
+    气泡仍会显示，必须重启 DSH 才消失。这是 dsh-plugin-manager 不发
+    cordis/dynamic-retract 导致的，插件自身无法修复。文档如实记录，不要试图在插件里补偿。
+
+================================================================================
+二、技术事实（已实测确认，不要重复排查）
+================================================================================
+
+- DSH 桌面版 / profile 目录：C:\Users\HSG\.dsh\profiles\desktop
+- 插件以 link 方式装入 profile，源码放任意工作区目录即可。
+
+- 【设置行替换】原生「性能与用量」行注册在 slot settings.general.item，
+  id = performance-usage，order = 30。
+  原生只接受 compact / detailed 两个值（configForms 里 ui-chat 域的 performanceUsage 字段，
+  宿主侧校验，写入 geek 会被拒绝）。
+  因此做法是：用【相同 id、相同 order、priority: -1】注册自己的行，把原生行顶掉；
+  极客档单独存在插件自己的 localStorage 里，简洁/详细仍旧写回原生字段。
+
+    name: 'settings.general.item',
+    id: 'performance-usage',     // ← 与原生相同
+    order: 30,                    // ← 与原生相同
+    priority: -1,                 // ← 必须 -1：同 cell 内 priority 小者胜出
+    locale: NS,
+    label: () => locale.bind(NS)('settingsTitle'),
+
+  【关键】priority 必须是 -1。用 priority: 0 会报
+  "single slot already has a registration"，无法覆盖同 id 的原生行。
+
+- 【状态栏插入点】slot conversation.composer.dock（kind=list, scope=session）。
+  取 order: -10，即排在原生 activity(0) / usage(1) 之前，也就是状态栏最左。
+  该 slot 的 standardProps 里可用 useChat / useSession / useTrajectory 等。
+
+- 【主题变量】（均已确认存在）：
+  --dsw-alias-label-primary / --dsw-alias-label-secondary / --dsw-alias-label-tertiary
+  --dsw-alias-border-l1 / --dsw-alias-border-l2 / --dsw-alias-interactive-bg-hover
+  --dsw-alias-brand-primary
+  --dsw-specific-menu          ← 原生统计弹窗的底色，浅色 #f8f9faf0 / 深色 #303136f0
+  --dsw-menu-backdrop-filter   ← blur(40px) saturate(150%)
+  --dsw-elevation-prominent    ← 原生弹窗的阴影
+  --dsw-radius-sm (8px) / --dsw-radius-lg (16px)
+  --dsh-content-font-size-secondary / --dsh-content-font-delta-secondary
+
+- 【原生气泡的度量】（照抄即可对齐）：
+    font-size: calc(var(--dsh-content-font-size-secondary, 13px) - 1px)
+    line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px))
+    padding: 1px 8px;  gap: 6px;  color: var(--dsw-alias-label-tertiary)
+    svg 宽高 14px;  font-variant-numeric: tabular-nums
+    hover 背景 var(--dsw-alias-interactive-bg-hover)
+
+- 客户端模块加载器写法：window.__ModuleLoader__.load({ id, factory })，
+  factory 内 const React = require('react')。
+  【禁止】JSX、【禁止】构建步骤、【禁止】顶层 import、【禁止】额外 npm 依赖。
+  react-dom 可 require，抽屉用 createPortal 挂到 document.body。
+
+- 客户端 bundle 由 dsh-client-hmr 轮询热替换，改完等约 1 秒生效。
+
+================================================================================
+三、五个指标的准确定义（最重要，务必逐条实现）
+================================================================================
+
+一个「请求」= 一个已结算的 assistant step。Chat 快照里 legacy.nodes 中 kind==='assistant'
+的节点，每个带有：
+
+    node.timing.stepStartTime    步骤开始（= step/start 事件时间）
+    node.timing.firstTokenTime   第一个 token 的时刻（可能为 null，见第八节）
+    node.timing.completedTime    流结束时刻
+    node.usage.outputTokens      上游返回的精确输出 token 数
+    node.blocks                  内容块数组
+
+定义：
+
+  1) 首字时间 TTFT = firstTokenTime − stepStartTime
+  2) 总用时        = completedTime − stepStartTime
+  3) 输出 Token    = usage.outputTokens（精确值，见第四节）
+  4) 实时速度      = 输出 Token ÷ (completedTime − firstTokenTime)，即真正解码阶段的速率
+  5) 折算速度      = 输出 Token ÷ 总用时
+
+  单位：时长 " s"，速度 " tok/s"，Token " tok"（数字与单位之间一个空格）。
+
+  【不要】把 reasoningTokens 加到 outputTokens 上：DSH 的 outputTokens 已包含推理 token。
+
+================================================================================
+四、Token 的来源与估算（精确 vs 估算）
+================================================================================
+
+优先级 1：上游 usage.outputTokens —— 这是权威值，必须优先使用。
+  从 node.usage 读取，兼容两种拼写：outputTokens / completionTokens / completion_tokens。
+  实测：一个真实会话日志的 262/262 个已结算步骤都带 outputTokens，即正常情况下永远是精确值。
+
+优先级 2：字符估算 —— 仅当上游确实没返回 usage 时（中断/失败的请求）。
+  此时该行标记为估算，界面在所有相关数字前显示 ~。
+
+【字符估算的系数是实测标定的，不要随手改成 /4 一刀切】
+内容不同质：
+  - 正文与推理（text / reasoning）：约 4 个 ASCII 字符 / token
+  - 工具调用参数（tool-call 的 argsRaw）：是 JSON，短键名 + 标点 + 引号，
+    分词效率明显更差，约 2.5 个 ASCII 字符 / token
+  - CJK 字符：1 字符 / token
+
+  实现：
+
+    const CJK_CHAR =
+      /[\u2e80-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/g
+    const CHARS_PER_TOKEN_PROSE = 4
+    const CHARS_PER_TOKEN_TOOL_ARGS = 2.5
+
+    function tokensOfSegment(text, charsPerToken) {
+      if (typeof text !== 'string' || text === '') return 0
+      const cjk = text.match(CJK_CHAR)?.length ?? 0
+      const rest = Math.max(0, text.length - cjk)
+      return cjk + rest / charsPerToken
+    }
+
+    // 累加各段，最后只取整一次（避免多块各自取整累积损失）
+    function estimateTokens(blocks) {
+      let total = 0
+      for (const block of blocks ?? []) {
+        if (block === null || typeof block !== 'object') continue
+        if (typeof block.text === 'string') total += tokensOfSegment(block.text, CHARS_PER_TOKEN_PROSE)
+        else if (typeof block.argsRaw === 'string') total += tokensOfSegment(block.argsRaw, CHARS_PER_TOKEN_TOOL_ARGS)
+      }
+      return Math.round(total)
+    }
+
+  标定依据（725 个已结算步骤，与上游 outputTokens 对比，取中位绝对对数误差）：
+    全部用 /4 一刀切          → 0.363（典型低估 30%，这就是"折算速度看起来偏小"的成因）
+    正文 /4 + 工具参数 /2.5   → 0.127（估计/实际 的中位数 = 1.00）
+  细网格搜索的理论最优是 0.125，上述规则与之相差 0.002，且更简单。
+  CJK 系数保留惯例的 1：样本中仅 45% 的步骤含中文，该参数在样本里不可辨识，
+  拟合出来是噪声。
+
+================================================================================
+五、实时（生成中）指标怎么算 —— 两个已修复的坑，必须按此实现
+================================================================================
+
+生成中的请求在 Chat 快照里只有 legacy.partial = { turn, step, blocks }。
+它【没有】任何时间字段，所以实时指标需要自己推导。
+
+坑 1：首字时间的起点必须用「步骤起点」，不能用「轮次起点」
+------------------------------------------------------------------
+真实日志实测：同一轮里，从轮次开始到第 2 步及以后各步开始的间隔，
+中位数 174 秒，最大 2720 秒，549/558 个非首步超过 1 秒。
+若用 turnTimings 里的轮次起点，实时首字会显示几十秒；
+等这轮结束变成精确值时又变回几秒 —— 这正是"思考中显示几十秒、完成后只有几秒"的成因。
+
+正确做法：用「同轮中最近一个已结算步骤的 completedTime」作为步骤起点
+（下一步紧接着它开始），只有整轮第一步才回退到轮次起点（实测仅差 26 ms）。
+
+    function stepStartOf(partial, nodes, turnTimings) {
+      const turn = partial?.turn
+      const step = partial?.step
+      let previous = null
+      for (const node of nodes ?? []) {
+        if (!isAssistantNode(node)) continue
+        if (node.turn !== turn) continue
+        if (!(node.step < step)) continue
+        const completed = numberOrNull(node.timing?.completedTime)
+        if (completed !== null && (previous === null || completed > previous)) previous = completed
+      }
+      if (previous !== null) return previous
+      return numberOrNull(turnTimings?.get?.(turn)?.startTime)
+    }
+
+坑 2：首字时刻以「新 partial key 出现的那一刻」为准
+--------------------------------------------------
+精确值的 firstTokenTime 由 Chat 从 token 增量累积，reasoning 和 tool-call 增量都算。
+而 legacy.partial 只在步骤有可见内容后才出现，所以「新的 key 出现的瞬间」就是首字时刻。
+不要等 blocks 里出现非空 text 才记时 —— 那会让长推理的步骤首字明显偏大。
+
+    useEffect(() => {
+      if (!running) { observation.current = { key: null, firstTokenAt: null }; return }
+      const key = `${partial.turn}:${partial.step}`
+      if (observation.current.key !== key) {
+        observation.current = { key, firstTokenAt: Date.now() }
+        return
+      }
+      if (observation.current.firstTokenAt === null && blocksHaveText(partial.blocks)) {
+        observation.current = { key, firstTokenAt: Date.now() }
+      }
+    }, [running, partial])
+
+坑 3：工具调用参数在流式期间不在 blocks 里，必须另外读
+--------------------------------------------------------
+真实日志实测：853/874 个步骤（98%）带工具调用参数，
+且这些参数占该步骤估算 token 的【中位数 93%】。
+
+但 Chat 存储层处理 tool-call-delta 时是「原样复制、不追加」：
+
+    case "tool-call-delta": {
+      argsRaw: previous?.kind === "tool-call" ? previous.argsRaw : ""
+      //                                            ↑ 只保留，不累加
+    }
+
+所以 argsRaw 在整个流式过程中是空串，直到 block-end 才一次性填入。
+只读 blocks 的话，写文件期间 token 数会完全不动，直到结束时突然跳一大截。
+
+参数增量其实存在：Chat 把它累积在调用自身的 args.chunks 上
+（PartialArguments 的公开字段），通过 legacy.runningCalls 暴露给客户端。
+对 phase === 'preparing' 的调用读取它，并按工具系数折算计入实时 token：
+
+    function preparingArgsText(runningCalls) {
+      let text = ''
+      for (const call of runningCalls ?? []) {
+        if (call === null || typeof call !== 'object') continue
+        if (call.phase !== 'preparing') continue
+        const chunks = call.args?.chunks
+        if (Array.isArray(chunks)) {
+          for (const piece of chunks) if (typeof piece === 'string') text += piece
+          continue
+        }
+        if (typeof call.argsRaw === 'string') text += call.argsRaw
+      }
+      return text
+    }
+
+    const tokens = estimateTokens(partial.blocks)
+      + Math.round(tokensOfSegment(preparingArgsText(runningCalls), CHARS_PER_TOKEN_TOOL_ARGS))
+
+其他实时细节：
+- 每 150 ms 刷新一次 now（setInterval），步骤结束后必须 clearInterval。
+- 实时值一律标记为估算（显示 ~），步骤结算后立刻被精确值替换。
+- 生成中时 legacy.partial.blocks 里 reasoning 也是 kind:'reasoning' 且带 text 字段，
+  所以估算天然覆盖推理内容，不需要特殊处理。
+
+================================================================================
+六、气泡的固定宽度布局（防抖动的核心，必须照做）
+================================================================================
+
+目标：任何一个数字变化（9.8→10.2、445→96、-- 占位、~ 出现或消失），
+整体宽度【一像素都不变】。
+
+做法：把固定宽度设在【数字元素】上，绝不设在包裹数字+单位的格子上。
+
+  .dsh-rum-parts { display: inline-flex; align-items: baseline; gap: 10px; }
+  .dsh-rum-part  { display: inline-flex; align-items: baseline;
+                   font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dsh-rum-num   { flex: none; display: inline-block; text-align: right;
+                   font-variant-numeric: tabular-nums; }
+  .dsh-rum-unit  { flex: none; white-space: pre; }   /* pre 保留前置空格 */
+  .dsh-rum-tilde { flex: none; display: inline-block; width: 1ch; text-align: center;
+                   visibility: hidden; }              /* 恒定占位，只切换可见性 */
+  .dsh-rum-tilde[data-on="true"] { visibility: visible; }
+
+  .dsh-rum-part[data-metric="ttft"] .dsh-rum-num,
+  .dsh-rum-part[data-metric="total"] .dsh-rum-num    { width: 4.5ch; }
+  .dsh-rum-part[data-metric="speed"] .dsh-rum-num,
+  .dsh-rum-part[data-metric="amortized"] .dsh-rum-num { width: 4.5ch; }
+  .dsh-rum-part[data-metric="tokens"] .dsh-rum-num    { width: 5.5ch; }
+
+【血泪教训，务必避免】
+- 不要把 width 设在 .dsh-rum-part 上。格子里还有单位文本，4ch 装不下「2.3 s」，
+  单位会被裁掉，现象是"数字和单位显示不全"。
+- 状态栏格子和抽屉格子【必须用不同类名】（本实现用 dsh-rum-part vs dsh-rum-col）。
+  曾因共用 dsh-rum-cell 类名，抽屉那条 overflow:hidden + text-overflow:ellipsis
+  把状态栏的单位也裁掉了。
+- 不要用 min-width。设了下限但数字继续变长时仍会推开宽度，抖动照旧。
+- 数字之间不要放 · 之类分隔符，改用 parts 上的固定 gap。
+- 估算标记 ~ 必须是常驻的 1ch 元素，只切 visibility，不能插入/删除节点。
+
+================================================================================
+七、抽屉：材质、定位、列对齐、动画
+================================================================================
+
+【材质必须与原生统计弹窗逐字相同】，不要用半透明色自己调：
+
+    background: var(--dsw-specific-menu);                 /* 深色 #303136f0，近乎不透明 */
+    -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter);
+    backdrop-filter: var(--dsw-menu-backdrop-filter);      /* blur(40px) saturate(150%) */
+    --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+    box-shadow: var(--dsw-elevation-prominent);
+    border-radius: var(--dsw-radius-lg);
+    padding: 16px;
+    color: var(--dsw-alias-label-secondary);
+    font-size: 12px; line-height: 18px;
+
+【禁止】用 color-mix(... var(--dsw-alias-bg-overlay) ...) —— 那会比原生明显更透。
+
+【定位】position: fixed 挂到 document.body（用 createPortal），避免被父容器裁剪。
+  右边缘与气泡右边缘对齐：用 right 偏移，不用 left + translateX(-50%)。
+  动画只做 translateY + scale，transform-origin: bottom right，
+  绝不引入水平位移。
+
+    transform: translateY(14px) scale(.985);
+    transition: opacity 160ms ease, transform 200ms cubic-bezier(.2,.8,.2,1);
+    [data-open="true"] { transform: translateY(0) scale(1); opacity: 1; }
+
+【列对齐 —— 这是最难的部分，必须实测不能用 ch 推算】
+抽屉每一列要正对着气泡里对应的那个数字。用 ch 算术做不到：ch 是字符「0」的推进宽度，
+而「tok/s」和细窄的「s」实际远比推算值窄，算出来的列永远差一截。
+
+正确做法：运行时读取气泡每格的真实像素宽度，写成 CSS 变量供抽屉 grid 使用。
+
+  // 气泡容器挂 ref，量五个 [data-metric] 格子
+  useLayoutEffect(() => {
+    if (!mounted) return undefined
+    const measure = () => {
+      const host = partsRef.current
+      if (host === null) return
+      const cells = host.querySelectorAll('[data-metric]')
+      if (cells.length !== 5) return
+      const widths = []
+      for (const cell of cells) {
+        const rect = cell.getBoundingClientRect()
+        if (rect.width <= 0) return          // 未布局完成，保留 CSS 兜底
+        widths.push(Math.round(rect.width * 100) / 100)
+      }
+      setColumnWidths((previous) =>
+        previous !== null && previous.every((v, i) => v === widths[i]) ? previous : widths)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    let observer
+    if (typeof ResizeObserver === 'function' && partsRef.current !== null) {
+      observer = new ResizeObserver(() => measure())
+      observer.observe(partsRef.current)
+    }
+    return () => { window.removeEventListener('resize', measure); observer?.disconnect() }
+  }, [mounted])
+
+  抽屉根节点把测得宽度发布成变量（按指标名绑定，不要靠位置）：
+    '--dsh-rum-col-ttft':      `${columnWidths[0]}px`,
+    '--dsh-rum-col-speed':     `${columnWidths[1]}px`,
+    '--dsh-rum-col-tokens':    `${columnWidths[2]}px`,
+    '--dsh-rum-col-total':     `${columnWidths[3]}px`,
+    '--dsh-rum-col-amortized': `${columnWidths[4]}px`,
+
+  行 grid（ch 表达式只作为测量落地前的兜底）：
+    grid-template-columns:
+      18px 56px
+      var(--dsh-rum-col-ttft,      calc(4.5ch + 2ch))
+      var(--dsh-rum-col-speed,     calc(4.5ch + 6ch))
+      var(--dsh-rum-col-tokens,    calc(5.5ch + 4ch))
+      var(--dsh-rum-col-total,     calc(4.5ch + 2ch))
+      var(--dsh-rum-col-amortized, calc(4.5ch + 6ch));
+    justify-content: end;   /* 抽屉 min-width 富余出来的空间推到左边，保持最后一列贴右 */
+    gap: 10px; padding: 4px 6px;
+
+【对齐还要处理「内容边缘 ≠ 容器边缘」】
+气泡内容右内边距 8px；抽屉是 16px padding + 行 6px padding = 22px。
+若只对齐两个容器的外框，数字会明显内缩。必须两边都实测再相减：
+  - drawerContentInset(panel)：panel 外框右缘 − 最后一列表头右缘
+  - pillContentInset(button)：button 外框右缘 − .dsh-rum-parts 右缘
+  落位时 right = window.innerWidth − (rect.right − pillPad) − inset。
+  并在下一帧再 place 一次（首次可能跑在列宽生效之前）。
+
+  抽屉宽高约束：width: max-content;
+    min-width: min(420px, calc(100vw - 24px));   /* 保住自己的表头不被截断 */
+    max-width: calc(100vw - 24px);
+
+【抽屉高度必须恒定】
+新行滑入时，被挤掉的第 11 行必须在【同一帧】移除，不能做离场动画。
+做过离场动画的版本会在这 240ms 内实际渲染 11 行，抽屉先长高一行再缩回，肉眼可见抖动。
+
+    // 只追踪"新到的 key"，其余行直接从传入列表派生
+    function useAnimatedRows(rows) {
+      const [entering, setEntering] = useState(() => new Set())
+      const seenKeys = useRef(null)
+      const timer = useRef(null)
+      useEffect(() => {
+        const keys = rows.map((row) => row.key)
+        const previous = seenKeys.current
+        seenKeys.current = keys
+        if (timer.current !== null) { clearTimeout(timer.current); timer.current = null }
+        if (previous === null) { setEntering(new Set()); return undefined }   // 首次打开不整表动画
+        const known = new Set(previous)
+        const arrivals = keys.filter((key) => !known.has(key))
+        if (arrivals.length === 0) { setEntering((c) => (c.size === 0 ? c : new Set())); return undefined }
+        setEntering(new Set(arrivals))
+        timer.current = setTimeout(() => { timer.current = null; setEntering(new Set()) }, 260)
+        return () => { if (timer.current !== null) { clearTimeout(timer.current); timer.current = null } }
+      }, [rows])
+      return rows.map((row, index) => ({ key: row.key, row, index,
+        phase: entering.has(row.key) ? 'enter' : 'idle' }))
+    }
+
+    .dsh-rum-item[data-phase="enter"] { animation: dsh-rum-in 240ms cubic-bezier(.2,.8,.2,1) both; }
+    @keyframes dsh-rum-in { from { opacity: 0; transform: translateY(-9px); } to { opacity: 1; transform: none; } }
+    /* 不要写 leave 相位的规则 */
+
+【平均值行】
+抽屉底部先画一条 0.5px 分隔线（--dsw-alias-label-tertiary 一级的 --dsw-alias-border-l2），
+再用同一套 grid 渲染平均值行，保证每个均值落在它汇总的那一列下面。
+
+  function averageOf(rows) {
+    if (rows.length === 0) return null
+    const mean = (pick) => {
+      let sum = 0, count = 0
+      for (const row of rows) {
+        const value = pick(row)
+        if (value === null || value === undefined || !Number.isFinite(value)) continue
+        sum += value; count += 1
+      }
+      return count === 0 ? null : sum / count
+    }
+    return {
+      count: rows.length,
+      ttftMs: mean((r) => r.ttftMs), speed: mean((r) => r.speed), tokens: mean((r) => r.tokens),
+      totalMs: mean((r) => r.totalMs), amortized: mean((r) => r.amortized),
+      estimated: rows.some((r) => r.estimated === true),
+    }
+  }
+
+  某列完全没有样本时打印 —，不要打印 0。
+  左侧显示 ⌀ 与「平均 10 条」（英文 avg of 10）。
+
+================================================================================
+八、首字时间在历史会话里为何曾经是空的（已修复，必须按此实现）
+================================================================================
+
+现象：首次启用时抽屉会从当前会话回填最近 10 条，但这些行首字列全是 —，
+而 DSH 自带的「轨迹」页却对同样的步骤显示出首字延迟。
+
+根因是数据流事实，不是计算缺失：
+  timing.firstTokenTime 是【流式累积】状态。Chat 从 live token 增量里逐块累积它，
+  而会话日志【不存 live chunk】。实测一个真实日志：787 个已结算消息，
+  assistant/live-chunk 事件为 0 个。因此从日志回放的步骤没有这个字段。
+
+但值是可恢复的：每条结算消息都带 data.stream —— 完整的 chunk 时间线，每个分片有自己的
+时间戳。轨迹域正是从这里重建的：
+  firstTokenTime = state.firstTokenTime ?? assistantStreamFirstTokenTime(event.data.stream)
+（对打包的 run 用 time0 + dt 前缀和还原每个分片的绝对时间。）
+
+Chat 的 finalNode() 【不透传】stream，所以插件从 legacy.nodes 拿不到它。
+解法是读轨迹域：conversation.composer.dock 的 standardProps 里有 useTrajectory，
+其快照的 eventNodes 中每个 assistant 节点都带已重建好的 timing.firstTokenTime。
+
+    function firstTokenIndex(trajectorySnapshot) {
+      const index = new Map()
+      const nodes = trajectorySnapshot?.eventNodes
+      if (!Array.isArray(nodes)) return index
+      for (const node of nodes) {
+        if (node === null || typeof node !== 'object') continue
+        if (node.kind !== 'assistant') continue
+        if (typeof node.turn !== 'number' || typeof node.step !== 'number') continue
+        const first = numberOrNull(node.timing?.firstTokenTime)
+        if (first === null) continue
+        index.set(`${node.turn}:${node.step}`, first)
+      }
+      return index
+    }
+
+调用方（务必防御式读取，没有轨迹域的组装里该 hook 就是 undefined）：
+
+    const useTrajectory = props.useTrajectory
+    const trajectory = typeof useTrajectory === 'function' ? useTrajectory((s) => s) : undefined
+    const NO_FIRST_TOKENS = new Map()
+    const firstTokens = useMemo(
+      () => (trajectory === undefined || trajectory === null ? NO_FIRST_TOKENS : firstTokenIndex(trajectory)),
+      [trajectory],   // 必须 memo，否则 effect 每次渲染都看到新 Map，永不收敛
+    )
+
+【必须处理的时序问题】轨迹域是另一个插件的投影，它的数据可能晚于本插件首次回填才就绪。
+只"回填时读一次"的话，那些行会永久停在 —。因此要有一个补写通道：
+history 里 ttftMs 仍为空、且新到的时间能匹配上该行 key 时，就地重算并写回。
+【关键】只补 ttftMs 为 null 的行 —— 实时记录下来的值绝不能被覆盖。
+
+  const next = current.map((row) => {
+    if (row.ttftMs !== null && row.ttftMs !== undefined) return row   // 实时值，不动
+    const first = firstTokens.get(row.key)
+    if (first === undefined) return row
+    if (row.startMs === null || row.startMs === undefined) return row  // 需要保留步骤起点
+    const ttftMs = Math.max(0, first - row.startMs)
+    const decodeMs = row.at != null ? Math.max(0, row.at - first) : null
+    return { ...row, ttftMs,
+      speed: row.tokens > 0 && decodeMs !== null && decodeMs > 0 ? row.tokens / (decodeMs / 1000) : row.speed }
+  })
+  if (changed) backfill(next)
+
+所以 readingOf() 的返回值里必须保留 startMs（步骤起点），供补写时重算用。
+
+================================================================================
+九、数据与持久化
+================================================================================
+
+localStorage 两个 key：
+
+  1) 模式标记：dsh.recentUsageMetrics.mode.v1
+     值为 "geek" 或 null（JSON）。非 "geek" 一律当作未启用。
+
+  2) 历史：dsh.recentUsageMetrics.history.v1
+     值为 JSON 数组，长度 ≤ 10，最新在最前。每项：
+
+     {
+       "key": "1:2",           // `${turn}:${step}`，用于去重
+       "at": 1792663948028,    // 结束时刻
+       "startMs": 1792663945000, // 步骤起点（补写首字时间时要用）
+       "ttftMs": 2300,
+       "totalMs": 4600,
+       "tokens": 1024,
+       "estimated": false,     // true 表示 tokens 是估算值
+       "speed": 445,
+       "amortized": 223
+     }
+
+  读取时对任何输入做归一化，任何异常都不得抛错：非数组 → 空；
+  单项缺字段/非数字 → 丢弃该字段；超长 → 截断到 10。
+  写入失败（配额满/被禁）不得抛错，只是本次不持久化。
+
+  行为：
+  - record(reading)：插到最前，按 key 去重，截断到 10，写盘。
+  - seed(readings)：仅当历史为空时，取传入列表的最后 10 条倒序写入。
+  - backfill(next)：整体替换为重新计算过的行（为首字时间补写用）。
+
+================================================================================
+十、中英文双语（i18n）—— 两个已修复的 bug，必须按此实现
+================================================================================
+
+【bug A：切回中文不生效（HMR 场景）】
+
+locale 服务对同一个 (命名空间, 语言) 只允许一个占用者，重复注册直接抛错，
+且只提供 register 返回的 disposer 作为释放手段。
+
+因此 apply 被第二次执行时（HMR 重载，或旧 fiber 清理尚未执行就重新 apply）：
+旧的 zh/en 还占着命名空间 → 新的 register 抛错 → 整个 locale effect 失败 →
+新字典没进去，而旧字典可能已被旧 fiber 清掉 → zh 缺失 → 查找沿 fallback 落到 en。
+结果就是「英文能显示，切不回中文」。
+
+修复三要素，缺一不可：
+
+    const DISPOSER_KEY = '__dshRecentUsageMetricsLocale'
+
+    function releaseDictionaries() {
+      const host = typeof globalThis !== 'undefined' ? globalThis : undefined
+      if (host === undefined) return
+      const previous = host[DISPOSER_KEY]
+      if (typeof previous !== 'function') return
+      delete host[DISPOSER_KEY]
+      try { previous() } catch {}
+    }
+
+    ctx.effect(() => {
+      releaseDictionaries()                        // ① 先释放上一代的占用
+      const dispose = locale.register(NS, { zh, en })
+      const host = globalThis
+      host[DISPOSER_KEY] = dispose                 // ② disposer 必须挂 globalThis
+      return () => {
+        const owner = host[DISPOSER_KEY] === dispose   // ③ 只有仍是 owner 才释放
+        if (owner) { delete host[DISPOSER_KEY]; dispose() }
+      }
+    }, 'dsh-recent-usage-metrics: zh/en strings')
+
+  ① 注册前必须先 release，否则重复注册抛错。
+  ② 不能存模块级变量：HMR 会重跑整个模块，模块变量重置为 undefined，
+     而上一代占用仍存活，就永远释放不掉。
+  ③ 不能无条件 dispose：重载时新一代先 apply 并写入 globalThis，
+     随后退休 fiber 的清理才执行，无条件释放会删掉新一代刚注册的字典。
+
+【bug B：重启 DSH 后变英文且切不回中文（冷启动场景）】
+
+原先只声明 inject: ['slots']，然后在 apply 里用 ctx.get('locale') 探测服务是否存在。
+冷启动时各插件启动顺序无保证，本插件可能先于 locale 插件启动，此时
+ctx.get('locale') 返回 undefined，而 `if (locale !== undefined)` 把注册整段吞掉：
+字典从未注册 → 槽位却声明了 locale: NS → 注入的 t 找不到字典 → 回落到 en 或原始 key。
+失败完全静默，没有报错。
+
+修复两处，必须同时满足：
+
+  1) locale 声明为【硬依赖】：
+       return { name: 'dsh-recent-usage-metrics', inject: ['slots', 'locale'], apply }
+  2) apply 里直接读 ctx.locale，不再探测，也不要保留 undefined 判空：
+       const locale = ctx.locale
+
+  【禁止】退回 inject: ['slots'] + ctx.get('locale') 探测；
+  【禁止】把 locale 相关 effect 包在「服务存在才执行」的分支里。
+
+【bug C：configForms 也是同类问题】
+设置行需要读原生 ui-chat 域的 performanceUsage 字段，该服务同样可能晚到。
+不要用 ctx.get('configForms') 一次性探测（会把设置行永久锁在 fallback 值上），
+改用 ctx.inject 等待：
+
+    ctx.inject(['configForms'], (scope) => {
+      let form = null
+      try { form = scope.configForms.get('ui-chat') } catch { form = null }
+      preference.bind(form)
+      return () => preference.bind(null)
+    })
+
+  createPreference 要支持延迟绑定（bind），并能幂等地重新绑定。
+
+【文案对照表】键名必须两边完全对应：
+
+  键名                 中文                                              英文
+  settingsTitle        性能与用量                                        Performance & usage
+  settingsDescription  选择性能与用量信息展示的详细程度                  Choose how much performance and usage information to show
+  optionCompact        简洁                                              Compact
+  optionDetailed       详细                                              Detailed
+  optionGeek           极客                                              Geek
+  geekHint             极客档在输入区状态行实时显示最新一次请求的首字时间、生成速度与 Token，点击可展开最近 10 次请求。
+                                                                         Geek keeps a live reading of the newest request in the composer status row — first token, generation speed and tokens — and opens the last ten requests on click.
+  statusAria           请求指标，点击查看最近 10 次请求                   Request metrics; open the last ten requests
+  statusHint           首字 {ttft} · 速度 {speed} · 输出 {tokens} · 总用时 {total} · 折算 {amortized}
+                                                                         First token {ttft} · speed {speed} · output {tokens} · total {total} · amortised {amortized}
+  seconds              {value} s                                         {value} s
+  speedUnit            {value} tok/s                                     {value} tok/s
+  tokensUnit           {value} tok                                       {value} tok
+  approxSpeedUnit      ~{value} tok/s                                    ~{value} tok/s
+  approxTokensUnit     ~{value} tok                                      ~{value} tok
+  none                 —                                                 —
+  drawerTitle          最近请求指标                                      Recent request metrics
+  drawerCount          最近 {count} 条                                   Last {count}
+  drawerEmpty          还没有完成的请求。发一条消息后，它的指标会出现在这里。
+                                                                         No completed requests yet. Send a message and its metrics appear here.
+  drawerLive           生成中                                            Streaming
+  colIndex             #                                                 #
+  colTime              时间                                              Time
+  colTtft              首字                                              First token
+  colSpeed             速度                                              Speed
+  colTokens            输出 Token                                        Output tokens
+  colTotal             总用时                                            Total
+  colAmortized         折算速度                                          Amortised
+  averageOf            平均 {count} 条                                   avg of {count}
+  justNow              刚刚                                              just now
+  secondsAgo           {count} 秒前                                      {count}s ago
+  minutesAgo           {count} 分钟前                                    {count}m ago
+  hoursAgo             {count} 小时前                                    {count}h ago
+
+  【禁止】在组件里内联中文字符串；【禁止】用 navigator.language 自行判断语言。
+
+================================================================================
+十一、性能（实测数据，供判断是否需要优化）
+================================================================================
+
+【实测：Geek 未启用时几乎零开销】
+所有定时器、事件监听、DOM 测量、渲染都在 `if (!geek) return null` 之后或被
+if (!open) / if (!running) 提前返回。常驻的只有：
+  - 四个 store 订阅（三个 useChat + 一个 useRows），每次 store 发布会话约 0.024 µs
+  - 一个 <style> 元素、一次字典注册、一次 localStorage 读
+按 25 次发布/秒计算约 0.0006 ms CPU/秒。可视为无影响。
+
+【实测：流式期间的纯计算成本】
+token 估算每 150 ms 重扫全部累积文本：
+  英文 20k 字符 → 0.19 µs/次   → 0.001 ms/秒
+  工具参数 3k   → 0.10 µs/次   → 0.001 ms/秒
+  中文 2k 字符  → 28 µs/次     → 0.19 ms/秒
+  中文 20k 字符 → 428 µs/次    → 2.9 ms/秒
+中文路径比英文慢约 150 倍，因为 String.match(/[\u4e00-\u9fff]/g) 每命中一个字符都要
+分配字符串对象，而英文零命中时返回 null、几乎不分配。即使极端情况也只占单核 0.3%。
+
+重新渲染路径（filter + seen-set 重建）：
+  200 条会话 → 约 4 µs/次
+  2000 条会话 → 约 40 µs/次
+按 25 chunk/秒 + 6.7 tick/秒，500 条会话约 0.33 ms CPU/秒。
+
+结论：不需要为性能做特殊优化。若将来要优化，优先减少 nodes 全量扫描。
+
+【估算系数标定数据】见第四节表格。
+
+================================================================================
+十二、文件清单
+================================================================================
+
+  package.json
+  cordis.patch.yml
+  lib/index.js
+  client/client.js
+  locale/en.json
+  locale/zh.json
+  icon.svg
+  README.md
+  需求.txt                                 ← 本文件
+  test/lifecycle.cjs                       ← 主测试（129 项断言）
+  test/repro-coldstart.cjs                 ← 冷启动 i18n 回归（17 项）
+  test/repro-hmr.cjs                       ← HMR 字典占用回归（5 项）
+
+------------------------------------------------------------------
+文件 1：package.json
+------------------------------------------------------------------
+{
+  "name": "dsh-recent-usage-metrics",
+  "version": "0.1.0",
+  "description": "Geek-mode request metrics for DSH: live TTFT / tok-s / token readout in the composer status row, plus a glass history drawer of the last 10 requests.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hansomgar/dsh-recent-usage-metrics.git"
+  },
+  "homepage": "https://github.com/hansomgar/dsh-recent-usage-metrics#readme",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "lib/index.js",
+    "client/client.js",
+    "cordis.patch.yml",
+    "locale/en.json",
+    "locale/zh.json",
+    "icon.svg",
+    "README.md",
+    "需求.txt"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
+
+  说明：dsh.client.inject 里的两项只用于【排序激活】，不是服务依赖。
+  服务级硬依赖（locale）写在模块返回值的 inject 数组里，两处不要混淆。
+
+------------------------------------------------------------------
+文件 2：cordis.patch.yml
+------------------------------------------------------------------
+# dsh-recent-usage-metrics bundle patch.
+#
+# One row: the plugin's whole surface is browser-side. The Host half exists so the
+# package is a Loader entry, which is what makes the Web GUI publish `./client`
+# into the boot graph.
+- insert:
+    - id: dsh-recent-usage-metrics
+      name: 'dsh-recent-usage-metrics'
+
+------------------------------------------------------------------
+文件 3：lib/index.js
+------------------------------------------------------------------
+/**
+ * Host half of dsh-recent-usage-metrics.
+ *
+ * Everything the plugin shows is derived in the browser from the Chat snapshot the
+ * Conversation layer already maintains: each settled assistant step carries its
+ * `timing` (step start, first token, completion) and the provider `usage`. No Host
+ * service, projection, or session event is added, so this row only makes the
+ * package a Loader entry and publishes `./client` into the boot graph.
+ */
+export const name = 'dsh-recent-usage-metrics'
+
+export function apply() {}
+
+------------------------------------------------------------------
+文件 4：locale/zh.json
+------------------------------------------------------------------
+{
+  "meta": {
+    "title": "极客请求指标",
+    "description": "在「性能与用量」增加极客档：在输入区状态行实时显示首字时间、生成速度与 Token，并用磨砂玻璃抽屉列出最近 10 次请求。"
+  }
+}
+
+------------------------------------------------------------------
+文件 5：locale/en.json
+------------------------------------------------------------------
+{
+  "meta": {
+    "title": "Geek request metrics",
+    "description": "Adds a Geek level to Performance & usage: a live TTFT / token-speed / token readout in the composer status row and a glass drawer listing the last 10 requests."
+  }
+}
+
+------------------------------------------------------------------
+文件 6：icon.svg
+------------------------------------------------------------------
+见仓库中的 icon.svg（渐变圆角方块 + 白色闪电）。用任何同尺寸的闪电图标替代也可。
+
+------------------------------------------------------------------
+文件 7：client/client.js
+------------------------------------------------------------------
+完整实现约 2230 行。核心结构与本文档第一至十一节一一对应，按顺序实现即可：
+
+  // 模块外壳
+  window.__ModuleLoader__.load({ id: NS, factory: (require) => {
+    const React = require('react')
+    const { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } = React
+    const h = React.createElement
+    ... 常量 / 字典 / STYLE_TEXT / 工具函数 / 组件 / apply
+    return { name: NS, inject: ['slots', 'locale'], apply }
+  }})
+
+  常量区（必须完全一致）：
+    NS = 'dsh-recent-usage-metrics'
+    STYLE_ID = 'dsh-recent-usage-metrics-style'
+    MODE_KEY = 'dsh.recentUsageMetrics.mode.v1'
+    HISTORY_KEY = 'dsh.recentUsageMetrics.history.v1'
+    MAX_ROWS = 10
+    CHAT_NS = 'ui-chat'
+    CHAT_FIELD = 'performanceUsage'
+    GEEK = 'geek'
+    NATIVE_ROW_ID = 'performance-usage'
+    DISPOSER_KEY = '__dshRecentUsageMetricsLocale'
+    CHARS_PER_TOKEN_PROSE = 4
+    CHARS_PER_TOKEN_TOOL_ARGS = 2.5
+    DURATION_UNIT = ' s'
+    SPEED_UNIT = ' tok/s'
+    DRAWER_INSET = 22
+
+  函数清单（按依赖顺序）：
+    tokensOfSegment / estimateTokens / blocksHaveText / completionTokensOf
+    firstRunMemberTime / isTokenDeltaChunk / firstTokenTimeOfStream   ← 第八节
+    readingOf                                                          ← 第三节
+    readJson / writeJson / normalizeHistory / createModel              ← 第九节
+    createPreference                                                   ← bug C
+    durationSlot / secondsText / speedText / tokensText / clockText / agoText
+    Tilde / BoltIcon / ChevronIcon / CheckIcon / OptionsMenu
+    PerformanceUsageRow                                                ← 第二节的设置行
+    preparingArgsText / useLiveReading / stepStartOf                   ← 第五节
+    useAnimatedRows                                                    ← 第七节
+    drawerContentInset / pillContentInset                              ← 第七节对齐
+    averageOf / AverageRow                                             ← 第七节平均值
+    firstTokenIndex                                                    ← 第八节
+    GeekStatus                                                         ← 主体
+    releaseDictionaries / apply                                        ← 第十节
+
+  apply(ctx) 里注册六件事，全部包在 ctx.effect 中（禁用时自动清理）：
+    1. 'dsh-recent-usage-metrics: style'
+       <style> 元素注入与移除
+    2. 'dsh-recent-usage-metrics: zh/en strings'
+       locale 字典注册（含 release + owner 判断）
+    3. 'dsh-recent-usage-metrics: preference teardown'
+       preference 的整体销毁
+    4. 'dsh-recent-usage-metrics: shipped preference mirror'
+       ctx.inject(['configForms']) 延迟绑定原生 ui-chat 偏好
+    5. 'dsh-recent-usage-metrics: performance row'
+       settings.general.item 行（id/order 同原生，priority -1）
+    6. 'dsh-recent-usage-metrics: composer status'
+       conversation.composer.dock 条目（id 'recent-usage-metrics', order -10）
+
+  组件里 t 的来源：槽位注册时声明了 locale: NS，框架会把 t 注入到组件的 props.t。
+
+------------------------------------------------------------------
+文件 8：README.md
+------------------------------------------------------------------
+面向使用者的说明：功能、安装方式、指标定义、防抖动与对齐的实现要点、
+已知限制（禁用插件需重启才卸载客户端半）。仓库中的 README.md 可直接参考。
+
+------------------------------------------------------------------
+文件 9～11：测试
+------------------------------------------------------------------
+三个测试都用「把 client.js 跑在 vm 沙箱里 + 自建 hook 运行时 + DOM shim」的方式，
+不需要浏览器，直接 node test/xxx.cjs 即可。
+
+  test/lifecycle.cjs        主测试，覆盖：五指标计算、10 行上限与插入顺序、
+                            固定宽度槽位、估算标记、平均值行、点击开合、
+                            右缘对齐、轨迹域补写、工具参数实时计入、清理无残留
+  test/repro-coldstart.cjs  断言 inject 含 locale、apply 读 ctx.locale、
+                            首屏中文、双向切换、命名空间声明、偏好跟随
+  test/repro-hmr.cjs        断言重载不撞名、只留一个声明、disposer 正确释放
+
+  自建 hook 运行时的要点（否则测试会挂）：
+  - 渲染要把 effect 的 cleanup 先跑一遍再重跑，且 frames 要跨渲染保留（用 visited Set），
+    否则 hook 状态会丢、嵌套组件永远不更新。
+  - useRef 直接实现为 frame.cells[i] = { kind:'ref', current:value }，不要二次求值。
+  - 结束前用 setTimeout(() => process.exit(...), 50) 兜底，
+    并断言 process.getActiveResourcesInfo() 里没有残留 timer。
+
+================================================================================
+十三、验收自检清单
+================================================================================
+
+[ ] 设置 → 通用 → 性能与用量 的下拉里有「简洁 / 详细 / 极客」三项
+[ ] 选「极客」后状态栏最左出现 ⚡ 气泡，格式 2.3 s / 445 tok/s / 1024 tok / 4.6 s / 223 tok/s
+[ ] 数字与单位间有空格，数字之间没有分隔点
+[ ] 气泡高度、字号、亮度与原生「55 轮 2307 步」气泡一致
+[ ] 流式过程中气泡宽度一像素都不变，状态栏不抖动
+[ ] 点击气泡弹出抽屉，右缘与气泡右缘对齐；再次点击/Esc/点外部关闭
+[ ] 气泡上没有悬停提示文字，鼠标悬停不打开抽屉
+[ ] 抽屉材质与原生统计弹窗一致（深色下近乎不透明的 --dsw-specific-menu）
+[ ] 抽屉七列顺序正确，每一列正对气泡里对应的数字
+[ ] 抽屉底部有分隔线 + 平均值行，空列显示 — 而不是 0
+[ ] 新请求插入时抽屉高度不变（第 11 行同帧消失）
+[ ] 生成中显示「生成中」高亮行，气泡图标脉冲
+[ ] 选回「简洁」或「详细」后气泡与抽屉立即消失
+[ ] 切英文界面全部变英文，切回中文全部变中文
+[ ] 完全重启 DSH 后仍是中文，且可双向切换
+[ ] 写文件/调用工具时，token 数在流式过程中持续增长（不是结束时才跳）
+[ ] 会话历史回填的行，在打开过轨迹页后首字时间能显示出来
