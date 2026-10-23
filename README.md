@@ -1,5 +1,7 @@
 # dsh-recent-usage-metrics
 
+**English** · [简体中文](README.zh-CN.md)
+
 Geek-level request metrics for DSH. It adds a third level — **Geek / 极客** — to the
 native **Performance & usage** preference in Settings → General, and while that level
 is active it keeps a live reading of the newest request in the composer status row
