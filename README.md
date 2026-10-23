@@ -1,233 +1,205 @@
 # dsh-recent-usage-metrics
 
-**English** · [简体中文](README.zh-CN.md)
+DSH 的极客级请求指标。它在 **设置 → 通用 → 性能与用量** 里加入第三档 **极客**，
+选中后，输入区状态行会常驻显示最新一次请求的实时读数，并可用一个磨砂玻璃抽屉
+查看最近 10 次请求的完整指标。
 
-Geek-level request metrics for DSH. It adds a third level — **Geek / 极客** — to the
-native **Performance & usage** preference in Settings → General, and while that level
-is active it keeps a live reading of the newest request in the composer status row
-plus a glass drawer with the last ten requests.
+**简体中文** · [English](README.en.md)
 
-## What you get
+## 你会得到什么
 
-**Settings → General → Performance & usage** now offers three levels:
+**设置 → 通用 → 性能与用量** 现在有三档：
 
-| Level | Behaviour |
+| 档位 | 行为 |
 | --- | --- |
-| Compact / 简洁 | Shipped behaviour, unchanged |
-| Detailed / 详细 | Shipped behaviour, unchanged |
-| **Geek / 极客** | Everything below |
+| 简洁 | 原生行为，不变 |
+| 详细 | 原生行为，不变 |
+| **极客** | 本文下面描述的全部内容 |
 
-Compact and Detailed keep writing the shipped `ui-chat` → `performanceUsage` field, so
-they behave exactly as before and stay in sync with the shipped row's data. Geek is a
-separate durable flag, because the shipped Chat schema only accepts two values.
+简洁与详细仍写入原生的 `ui-chat` → `performanceUsage` 字段，因此行为与原来完全一致，
+也和原生行的数据保持同步。极客是一个独立的持久标记，因为原生 Chat 的 schema 只接受两个值。
 
-**Composer status row** (left of the shipped `55 轮 2307 步` pill):
+**输入区状态行**（位于原生 `55 轮 2307 步` 气泡左侧）：
 
 ```
 ⚡ 2.3 s   445 tok/s   1024 tok   4.6 s   223 tok/s
 ```
 
-time to first token · live generation speed · output tokens · total time · amortised
-speed (output ÷ total), separated by whitespace only. The pill reproduces the shipped
-statistics pill: the same `--dsw-alias-label-tertiary` foreground for both the text and
-the icon (the native pills never tint their glyph), and the same type scale. Height comes
-from padding + line-height, so it matches the native row.
+依次为：首字时间 · 实时生成速度 · 输出 Token · 总用时 · 折算速度（输出 ÷ 总用时），
+各项之间只用空白分隔。该气泡复刻原生气泡：文字与图标同样使用
+`--dsw-alias-label-tertiary`（原生气泡从不给图标上色），字号体系也相同。
+高度由 padding + line-height 自然撑开，因此与原生的那一行齐平。
 
-Each figure's digits are reserved with a **fixed width on the number element only** —
-never on the wrapping cell, which also carries the unit and would otherwise clip it. The
-estimate marker is a permanently reserved 1ch span that only toggles its paint. A value
-growing from `3.1` to `57.8`, a speed dropping from `328` to `9`, a `--` placeholder, and
-a `~` appearing or disappearing all leave the pill's width byte-identical — the centred
-composer row never shifts.
+每个数字都以**固定宽度写在数字元素自身上**——绝不写在外层格子上，因为格子里还有单位，
+写窄了会把单位裁掉。估算标记是一个常驻占位的 1ch 元素，只切换可见性。
+于是「`3.1` 长成 `57.8`」「速度从 `328` 掉到 `9`」「`--` 占位」「`~` 出现或消失」
+这些变化都让气泡宽度逐字节不变——居中的输入区永远不会位移。
 
-The budgets come from the real distribution of a 433-reading session log, and each
-formatter is written to stay inside its budget:
+这些宽度来自一份 433 条读数的真实会话日志的分布，每个格式化函数都写得不会超出自己的预算：
 
-| Slot | Digits | Why that is enough |
+| 槽位 | 位数 | 为什么够 |
 | --- | --- | --- |
-| first token / total | `4.5ch` | `57.8` normally; from 100 s up it prints whole seconds (`126`) |
-| speed / amortised | `4.5ch` | p50 `85`, max `328` in the log |
-| output tokens | `5.5ch` | p50 `219`; `123456` collapses to `123k` |
+| 首字 / 总用时 | `4.5ch` | 通常 `57.8`；超过 100 秒就打印整秒（`126`） |
+| 速度 / 折算速度 | `4.5ch` | 日志中 p50 `85`，最大 `328` |
+| 输出 Token | `5.5ch` | p50 `219`；`123456` 折叠为 `123k` |
 
-The pill and the drawer use **disjoint class names** (`dsh-rum-part` vs `dsh-rum-col`).
-Sharing one cell class let the drawer's ellipsis rule clip the pill's units — the regression
-that produced digits with a truncated ` s` / ` tok/s`.
+气泡与抽屉使用**互不相交的类名**（`dsh-rum-part` vs `dsh-rum-col`）。
+曾因二者共用同一个单元格类名，抽屉的省略号规则把气泡的单位也裁掉了——
+这正是「数字后面跟着被截断的 ` s` / ` tok/s`」那次回归的成因。
 
-Drawer columns are **measured from the pill at runtime**, not derived from `ch`. `ch` is
-the advance of `0`, while `tok/s` and the thin `s` are narrower, so an arithmetic column
-can never sit exactly under the rendered cell. On open the plugin reads each
-`[data-metric]` cell's `getBoundingClientRect().width` and publishes one custom property
-per metric (`--dsh-rum-col-ttft`, `--dsh-rum-col-speed`, `--dsh-rum-col-tokens`,
-`--dsh-rum-col-total`, `--dsh-rum-col-amortized`), which the row grid consumes. A
-`ResizeObserver` on the pill re-measures after a font-scale change or a metric swap, and a
-`ch` expression stays as the fallback for the frame before measurement lands.
+抽屉的列宽是**在运行时从气泡实测得到的**，不是用 `ch` 推算的。`ch` 是字符 `0` 的推进宽度，
+而 `tok/s` 和细窄的 `s` 实际都比它窄，所以算术推算出来的列永远无法精确落在渲染出的格子下面。
+打开抽屉时，插件读取每个 `[data-metric]` 格子的 `getBoundingClientRect().width`，
+按指标名各发布一个自定义属性（`--dsh-rum-col-ttft`、`--dsh-rum-col-speed`、
+`--dsh-rum-col-tokens`、`--dsh-rum-col-total`、`--dsh-rum-col-amortized`），由行的 grid 消费。
+气泡上挂一个 `ResizeObserver`，在字体缩放或指标变化后重新测量；
+测量落地前的那一帧由 `ch` 表达式兜底。
 
-| Drawer column | Consumes | Sits under |
+| 抽屉列 | 消费的变量 | 对齐到 |
 | --- | --- | --- |
-| first token | `--dsh-rum-col-ttft` | the pill's first-token cell |
-| speed | `--dsh-rum-col-speed` | the pill's speed cell |
-| output tokens | `--dsh-rum-col-tokens` | the pill's token cell |
-| total | `--dsh-rum-col-total` | the pill's total-time cell |
-| amortised | `--dsh-rum-col-amortized` | the pill's amortised cell |
+| 首字 | `--dsh-rum-col-ttft` | 气泡的首字格 |
+| 速度 | `--dsh-rum-col-speed` | 气泡的速度格 |
+| 输出 Token | `--dsh-rum-col-tokens` | 气泡的 Token 格 |
+| 总用时 | `--dsh-rum-col-total` | 气泡的总用时格 |
+| 折算速度 | `--dsh-rum-col-amortized` | 气泡的折算速度格 |
 
-Two further details make the edges actually coincide:
+还有两个细节才让边缘真正重合：
 
-- **Content edges, not box edges.** The pill pads its content by 8px, while the drawer
-  stacks 16px of its own padding with a row's 6px. Aligning the two *boxes* therefore
-  leaves the numbers visibly inset. Both insets are measured
-  (`drawerContentInset` / `pillContentInset`) and subtracted, so the last figure in the
-  drawer lines up with the last figure in the pill.
-- **Spare width goes left.** The drawer keeps a `min-width` so its own headers are not
-  truncated; each row uses `justify-content: end`, pushing any surplus to the left so the
-  final column stays flush. The drawer is also re-placed on the next animation frame,
-  because the first pass can run before the measured columns have been applied.
+- **对齐内容边缘，不是容器边缘。** 气泡的内容右内边距是 8px，而抽屉是自身 16px
+  加上一行的 6px。因此对齐两个*容器*会让数字明显内缩。两边的内边距都被实测
+  （`drawerContentInset` / `pillContentInset`）并相减，抽屉里最后一个数字才与气泡里
+  最后一个数字齐平。
+- **富余宽度归到左侧。** 抽屉保留 `min-width` 以免自己的表头被截断；每一行用
+  `justify-content: end`，把多余的空间推向左方，让最后一列保持贴右。
+  抽屉还会在下一个动画帧重新定位一次，因为首次定位可能跑在实测列宽生效之前。
 
-Click the pill to open the drawer; click it again, or press Escape, or click outside, to
-close it. There is no hover-open and no tooltip.
+点击气泡打开抽屉；再次点击、按 Esc、或点击外部即可关闭。没有悬停打开，也没有悬停提示。
 
-**Drawer** — slides up from the status row, right-aligned to that pill, `position: fixed`
-on `document.body` so no scroll container can clip it. Its material is the shipped
-statistics dialog's own, copied token for token: the `--dsw-specific-menu` fill
-(`#303136f0` in dark mode, i.e. nearly opaque, the same surface behind the native
-numbers), the `--dsw-menu-backdrop-filter` 40px/150% blur, `--dsw-elevation-prominent`
-stroke and shadow, `--dsw-radius-lg`, and 16px padding. It lists the last ten requests,
-newest first, with no explanatory footer:
+**抽屉**——从状态行向上滑出，右边缘与该气泡对齐，`position: fixed` 挂在
+`document.body` 上，因此不会被任何滚动容器裁剪。它的材质逐字复刻了原生统计弹窗：
+`--dsw-specific-menu` 底色（深色模式下是 `#303136f0`，即近乎不透明，正是原生数字背后的那层）、
+`--dsw-menu-backdrop-filter` 的 40px/150% 模糊、`--dsw-elevation-prominent` 描边与阴影、
+`--dsw-radius-lg`、以及 16px 内边距。它按最新在上的顺序列出最近十次请求，底部不加说明文字：
 
-| # | Time | First token | Speed | Output tokens | Total | Amortised |
+| # | 时间 | 首字 | 速度 | 输出 Token | 总用时 | 折算速度 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 18:42:07 | 2.3 s | 445 tok/s | 1024 tok | 4.6 s | 223 tok/s |
 
-A new request slides in at the top; the row that falls off the ten-row cap is removed in
-the **same frame** rather than fading out on its own. An exit phase would keep an
-eleventh row laid out for the animation's duration, growing the drawer by a row and
-shrinking it back — a visible height jump on every insertion. Opening the drawer also
-establishes a baseline instead of animating, so the whole list never slides in at once.
+新请求从顶部滑入；被十行上限挤掉的那一行在**同一帧**内移除，而不是自己淡出。
+离场动画会让第 11 行在整个动画期间参与布局，使抽屉先长高一行再缩回——
+每次插入都会看到一次高度跳动。打开抽屉时也只是建立基线，不播放动画，
+所以整个列表不会在打开的瞬间一起滑入。
 
-While a step is streaming, the drawer shows it as a live row above the history, and the
-status reading switches to a live style. Under a rule below the history sits a summary
-row — the average of the visible requests, in the same grid so each mean lands under its
-column. A column with no samples (say no TTFT on an interrupted request) prints a dash
-rather than a misleading zero.
+某个步骤正在流式生成时，抽屉把它显示为历史上方的一条 live 行，状态读数也切换为 live 样式。
+历史下方有一条分隔线，线下面是汇总行——对当前可见请求取平均值，复用同一套 grid，
+因此每个均值都落在它所汇总的那一列下面。完全没有样本的列（比如中断请求没有首字时间）
+打印破折号，而不是容易误解的 0。
 
-## How the numbers are measured
+## 数字是怎么算出来的
 
-Everything is derived in the browser from the Chat snapshot the Conversation layer
-already maintains — the plugin adds no Host service, session event, or projection.
+一切都在浏览器内、从 Conversation 层本就维护的 Chat 快照推导得出——
+插件没有新增任何 Host 服务、会话事件或投影。
 
-- **Time to first token** — `timing.firstTokenTime − timing.stepStartTime`, the recorded
-  moment the request was issued and the moment the first visible delta arrived.
-- **Total time** — `timing.completedTime − timing.stepStartTime`.
-- **Live speed** — output tokens ÷ decode time (`completedTime − firstTokenTime`).
-- **Output tokens** — the provider's own `usage.outputTokens`, which is the authority.
-  It is read from `assistant/message.data.usage` (verified against a real session log:
-  262 of 262 settled steps carried it). `reasoningTokens` is already included in that
-  count and is never added on top. OpenAI-shaped `completionTokens` spellings are also
-  accepted for adapters that forward their usage verbatim.
-- **Amortised speed** — output tokens ÷ total time.
+- **首字时间**——`timing.firstTokenTime − timing.stepStartTime`，即请求发出的时刻
+  与第一个可见增量到达的时刻。
+- **总用时**——`timing.completedTime − timing.stepStartTime`。
+- **实时速度**——输出 Token ÷ 解码时长（`completedTime − firstTokenTime`）。
+- **输出 Token**——上游自己的 `usage.outputTokens`，这是权威值。它读自
+  `assistant/message.data.usage`（已用真实会话日志核对：262 个已结算步骤全部携带它）。
+  `reasoningTokens` 已经包含在这个计数里，绝不再叠加。对于原样转发自身 usage 的适配器，
+  也接受 OpenAI 风格的 `completionTokens` 拼写。
+- **折算速度**——输出 Token ÷ 总用时。
 
-The character estimate is a genuine fallback, not the normal path: it is used only for a
-step whose provider returned no usage at all (an interrupted or failed request), and such
-a row is marked `~`.
+字符估算是真正的兜底，不是常规路径：只有当某个步骤的上游完全没有返回 usage 时才会用到
+（中断或失败的请求），这样的行会被标记 `~`。
 
-Its coefficients are calibrated, not guessed. The content is not homogeneous: prose and
-reasoning tokenize near 4 ASCII characters per token, while tool-call arguments are JSON —
-short keys, punctuation, quoted values — and tokenize markedly worse, near 2.5. Measured
-against the provider's own `outputTokens` over 729 settled steps of a real session log,
-using the median absolute log error:
+它的系数是标定出来的，不是猜的。内容并不同质：正文与推理大约 4 个 ASCII 字符/token，
+而工具调用参数是 JSON——短键名、标点、带引号的值——分词效率明显更差，约 2.5。
+以真实会话日志 729 个已结算步骤为样本，与上游自己的 `outputTokens` 对比，
+取中位绝对对数误差：
 
-| Rule | Median error | Estimate ÷ actual (p50) |
+| 规则 | 中位误差 | 估计 ÷ 实际（p50） |
 | --- | --- | --- |
-| one shared `/4` for everything | 0.361 | 0.70 |
-| prose `/4`, tool args `/2.5` (shipped) | **0.128** | **1.00** |
+| 全部共用 `/4` | 0.361 | 0.70 |
+| 正文 `/4`、工具参数 `/2.5`（现行） | **0.128** | **1.00** |
 
-Splitting the two is what removed the bias. The old shared divisor systematically
-under-counted by about 30%, which is why the live amortised speed read low during
-generation; a fine grid search put the optimum at 0.125, so the shipped rule is within
-three thousandths of it. CJK stays at the conventional one token per character: the search
-suggested a lower cost, but only 45% of those steps contain any CJK, so that term is
-poorly identified in this sample and a fitted value would be noise.
+把两者拆开才是消除偏差的关键。旧的共用除数会系统性低估约 30%，
+这正是生成过程中实时折算速度读数偏低的原因；细网格搜索给出的最优值是 0.125，
+现行规则与之相差三千分之一。CJK 保留惯例的 1 token/字符：搜索建议了更低的代价，
+但样本中只有 45% 的步骤含任何 CJK，该参数在这里辨识度很差，拟合出来是噪声。
 
-### Tool arguments while they stream
+### 工具参数在流式过程中
 
-`legacy.partial.blocks` does **not** carry argument text during a call. The store's
-`tool-call-delta` branch copies `argsRaw` unchanged, so it stays an empty string until
-`block-end` fills it in one go. Counting only `blocks` therefore froze the live figure for
-the whole write phase — and that phase dominates real output: across 874 settled steps of
-a session log, tool arguments were a median **93%** of the estimated tokens, and 98% of
-steps had them.
+`legacy.partial.blocks` 在一个调用进行期间**不**携带参数文本。存储层的
+`tool-call-delta` 分支是原样复制 `argsRaw`，所以它一直是空字符串，直到 `block-end`
+一次性填入。因此只统计 `blocks` 会让实时读数在整个写入阶段冻结——
+而这一阶段占据了真实输出的绝大部分：在一份会话日志的 874 个已结算步骤里，
+工具参数占估算 token 的**中位数 93%**，且 98% 的步骤都带有它们。
 
-The fragments do exist during the call. They accumulate on the call's own `args.chunks`
-view, which `legacy.runningCalls` exposes for a call still in its `preparing` phase, so the
-live count reads them there and weights them at the tool coefficient. This is what makes
-the number climb while a file is being written instead of jumping when it finishes.
+分片在调用期间确实存在。它们累积在调用自身的 `args.chunks` 视图上，
+对于仍处于 `preparing` 阶段的调用，`legacy.runningCalls` 会把它暴露出来，
+因此实时计数从那里读取，并按工具参数系数加权。这就是为什么写文件期间数字会持续攀升，
+而不是等到结束时才跳一下。
 
-The streaming row is approximate by nature — the Chat snapshot exposes the running step
-only as `legacy.partial` (turn, step, blocks), with no per-step start time. Two things keep
-that approximation honest:
+流式行本质上是近似的——Chat 快照只把正在运行的步骤暴露为
+`legacy.partial`（turn、step、blocks），没有每步的起始时间。有两点让这个近似保持诚实：
 
-- **A step-level origin.** The settled figure is `firstToken − stepStart`, so the live one
-  must use the same origin. Subtracting the *turn* start instead overstates TTFT by
-  everything earlier in the turn: in a real session log the gap from turn start to a later
-  step's start has a **174 s median** and reaches **2720 s**, and 549 of 558 non-first steps
-  exceed one second. That is why a live reading could show tens of seconds while reasoning
-  yet a few seconds once the step settled. The plugin now uses the latest settled step's
-  completion in the same turn as the step start, falling back to the turn's start only for
-  a turn's first step (which begins ~26 ms after it).
-- **First delta, not first visible text.** The settled `firstTokenTime` counts reasoning and
-  tool-call deltas too, and `legacy.partial` only appears once the step has visible content —
-  so the moment a new partial key appears *is* the first-token moment.
+- **步骤级的起点。** 结算后的数值是 `firstToken − stepStart`，所以实时值必须用同一个起点。
+  若改用*轮次*起点，就会把该轮中更早的一切都算进首字时间里：在一份真实会话日志中，
+  从轮次开始到后序步骤开始的间隔**中位数 174 秒**，最大达到 **2720 秒**，
+  558 个非首步中有 549 个超过一秒。这就是为什么实时读数可能在推理时显示几十秒，
+  而步骤一结算却只剩几秒。插件现在改用同一轮中最近一个已结算步骤的完成时刻作为步骤起点，
+  只有一轮的第一步才回退到轮次起点（它比轮次起点晚约 26 ms）。
+- **首个增量，而不是首段可见文本。** 结算后的 `firstTokenTime` 也把推理与工具调用增量计入，
+  而 `legacy.partial` 只在步骤有了可见内容后才出现——所以新的 partial key 出现的瞬间
+  *就是*首字时刻。
 
-## First-token time for replayed history
+## 回放历史的首字时间
 
-Seeding the drawer from an existing conversation used to leave the first-token column
-empty, even though the Trajectory panel showed a value for the same steps. The reason is
-a data-flow fact, not a missing calculation: `timing.firstTokenTime` is *streamed* state.
-The Chat store accumulates it from live token deltas, and the session log stores no live
-chunks — a real log held 787 settled messages and **zero** `assistant/live-chunk` events.
-A step replayed from that log therefore has no such field.
+从已有会话给抽屉回填数据时，首字列曾经是空的，尽管轨迹面板对同样的步骤能显示出数值。
+原因是数据流事实，而不是计算缺失：`timing.firstTokenTime` 是*流式累积*状态。
+Chat 存储从实时 token 增量中累积它，而会话日志不存 live chunk——
+一份真实日志里有 787 个已结算消息，`assistant/live-chunk` 事件是**零**个。
+因此从该日志回放的步骤没有这个字段。
 
-The value is still recoverable. Every settled message carries `data.stream`, the whole
-chunk timeline with per-fragment timestamps, and the Trajectory domain rebuilds the mark
-from it (`firstTokenTime ?? assistantStreamFirstTokenTime(event.data.stream)`), summing
-`time0 + dt` across each packed run. That is why its panel can date history that the Chat
-snapshot cannot.
+但这个值仍可恢复。每条已结算消息都携带 `data.stream`，即完整的 chunk 时间线，
+每个分片都有自己的时间戳；轨迹域正是从这里重建该时刻
+（`firstTokenTime ?? assistantStreamFirstTokenTime(event.data.stream)`），
+对每个打包的 run 用 `time0 + dt` 做前缀和。这就是为什么它的面板能给 Chat 快照
+无法定时的历史标上时间。
 
-The plugin reads those times from the Trajectory snapshot, which a slot entry reaches
-through the standard `useTrajectory` hook, and dates its rows with them. Two consequences
-worth knowing:
+插件从轨迹快照读取这些时间——槽位条目通过标准 `useTrajectory` hook 访问它——
+并据此给自己的行定时。有两点后果值得知道：
 
-- The Trajectory domain is another plugin's projection, so its times can arrive *after*
-  the plugin seeded. Rows that were stored undated are repaired in place when that happens
-  (`backfill`), instead of staying at `--` for the rest of the session.
-- A value that streamed live is never overwritten: the repair only touches rows whose
-  first-token time is still absent.
+- 轨迹域是另一个插件的投影，所以它的时间可能在插件完成回填*之后*才到达。
+  那些已存为无时间的行会在此时就地修复（`backfill`），而不是整个会话都停在 `--`。
+- 曾经流式实时记录下来的值绝不会被覆盖：修复只触碰首字时间仍然缺失的行。
 
-If a composition has no Trajectory domain, `useTrajectory` is simply absent, no index is
-built, and undated rows keep showing `--` — the previous behaviour, with no error.
+如果某个组装里没有轨迹域，`useTrajectory` 就是缺席的，插件不建立索引，
+无时间的行继续显示 `--`——即之前的行为，且不报错。
 
-## Install
+## 安装
 
 ```powershell
-# from the dsh GUI's Plugin Manager, or:
-#   plugin_manager install_bundle with target = this directory
+# 在 dsh GUI 的插件管理器中安装，或：
+#   plugin_manager install_bundle，target 指向本目录
 ```
 
-The bundle links this directory into the profile, so editing `client/client.js` and
-reloading the page picks up the change. Host-side code never needs a restart because
-there is none.
+该 bundle 把本目录链接进 profile，因此改完 `client/client.js` 刷新页面即可生效。
+宿主侧代码永远不需要重启，因为它本身就存在。
 
-## Layout
+## 目录结构
 
-| Path | Purpose |
+| 路径 | 作用 |
 | --- | --- |
-| `client/client.js` | The whole feature: settings row, status reading, drawer |
-| `lib/index.js` | Empty Host half — makes the package a Loader entry so `./client` is published |
-| `cordis.patch.yml` | The one inserted Loader row |
-| `locale/en.json`, `locale/zh.json` | Plugin Manager title and description |
-| `icon.svg` | Plugin icon |
-| `test/lifecycle.cjs` | Runs the real client against a DOM/hook shim: metrics, ten-row cap, insertion order, click/open, disposal |
-| `test/repro-coldstart.cjs` | Regression: a cold page must paint Chinese and stay switchable both ways |
-| `test/repro-hmr.cjs` | Regression: a reload must not collide with the live dictionary claim |
+| `client/client.js` | 全部功能：设置行、状态读数、抽屉 |
+| `lib/index.js` | 空的 Host 半——让包成为一个 Loader 条目，从而发布 `./client` |
+| `cordis.patch.yml` | 唯一插入的那一行 Loader 条目 |
+| `locale/en.json`、`locale/zh.json` | 插件管理器里显示的标题与说明 |
+| `icon.svg` | 插件图标 |
+| `test/lifecycle.cjs` | 在 DOM/hook shim 上跑真实的客户端：指标、十行上限、插入顺序、点击开合、清理 |
+| `test/repro-coldstart.cjs` | 回归：冷页面必须首屏中文，且双向可切换 |
+| `test/repro-hmr.cjs` | 回归：重载不得与存活的字典占用冲突 |
 
 ```powershell
 node test/lifecycle.cjs
@@ -235,31 +207,27 @@ node test/repro-coldstart.cjs
 node test/repro-hmr.cjs
 ```
 
-## Language after a restart
+## 重启之后的语言
 
-`locale` is declared as a **hard dependency** (`inject: ['slots', 'locale']`) and `apply`
-reads `ctx.locale`. Probing with `ctx.get('locale')` was a real defect with a confusing
-symptom: the locale plugin itself waits on the connection, settings and remotes services,
-so on a cold page this plugin could apply first, read `undefined`, skip registering its
-dictionaries, and then render through a dictionary-less `t` — English, or raw keys, that
-stayed English even after switching the language back.
+`locale` 被声明为**硬依赖**（`inject: ['slots', 'locale']`），`apply` 读取 `ctx.locale`。
+用 `ctx.get('locale')` 去探测是一个真实缺陷，症状相当令人困惑：locale 插件本身要等待
+connection、settings、remotes 这几个服务，因此冷页面时本插件可能先执行 `apply`，
+读到 `undefined`，跳过字典注册，然后经由一个没有字典的 `t` 渲染——
+表现为英文或原始 key，而且即便把语言切回去也仍然是英文。
 
-`configForms` is optional (a profile may compose this bundle without the settings domain),
-so it is awaited with `ctx.inject(['configForms'], …)` rather than probed once. A single
-probe would latch the settings row onto the fallback preference for the whole session if
-the domain arrived late. Both choices follow the plugin guidance: required services go in
-`inject`, optional ones go in `ctx.inject`.
+`configForms` 是可选的（某个 profile 可能在不带设置域的情况下组装本 bundle），
+所以用 `ctx.inject(['configForms'], …)` 等待它，而不是探测一次。若只探测一次，
+一旦该域晚到，设置行就会整个会话被锁死在兜底偏好上。两种选择都遵循插件规范：
+必需的服务放进 `inject`，可选的放进 `ctx.inject`。
 
-The dictionary claim is parked on `globalThis` so a hot reload can release the previous
-generation's claim before registering; otherwise the second `register` for the namespace
-would throw and leave the UI dictionary-less — the same visible symptom by another route.
+字典占用被挂在 `globalThis` 上，好让热重载能在注册前释放上一代的占用；
+否则第二次 `register` 同一命名空间会抛错，让界面失去字典——同样的可见症状，另一条路径。
 
-## Notes
+## 备注
 
-- The row is registered into the shipped `performance-usage` cell with `priority: -1`
-  and the shipped `order: 30`, so it renders in the same place and the shipped cell is
-  shadowed rather than duplicated.
-- Everything that outlives a render is created inside `ctx.effect`, so disabling the
-  plugin restores the shipped row and removes every listener and style.
-- History and the Geek flag live in `localStorage` (`dsh.recentUsageMetrics.*`) and
-  survive a disable/enable cycle.
+- 该行以 `priority: -1` 和原生的 `order: 30` 注册进原生的 `performance-usage` 单元格，
+  因此它渲染在同一位置，原生单元格是被遮蔽而不是重复。
+- 所有比一次渲染活得更久的东西都创建在 `ctx.effect` 里，因此禁用插件会恢复原生行，
+  并移除每一个监听器与样式。
+- 历史与极客标记存放在 `localStorage`（`dsh.recentUsageMetrics.*`），
+  在禁用/启用之间仍然保留。
