@@ -161,6 +161,14 @@ DSH 的极客级请求指标。它在 **设置 → 通用 → 性能与用量** 
 - **首个增量，而不是首段可见文本。** 结算后的 `firstTokenTime` 也把推理与工具调用增量计入，
   而 `legacy.partial` 只在步骤有了可见内容后才出现——所以新的 partial key 出现的瞬间
   *就是*首字时刻。
+- **从 `step/start` 就开始计时。** Chat 的 `legacy.partial` 要等第一个可见块，
+  实测距步骤开始**中位数 1.9 秒**（p90 2.9 秒）——而这段时间正是首字的主体。
+  所以只看 Chat 的话，数字会「一出现就是终值」，看不到增长。
+  轨迹域在 `step/start` 那一刻就建立了该步的 assistant 记录，其 `requests[]` 里
+  带 `status: "running"` 与精确的 `startedAt`（`step/start` 属于 location boundary，
+  会话装配层会把发布优先级从定义声明的 `none` 提升为 `immediate`）。
+  插件据此判断「本步正在进行」并取起点，于是首字在生成中由 `now − startedAt` 持续增长，
+  首个 token 到达后改用 `firstTokenTime − startedAt` 锁定——与结算值是同一个减法。
 
 ## 回放历史的首字时间
 

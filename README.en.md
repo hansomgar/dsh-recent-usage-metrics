@@ -184,6 +184,16 @@ that approximation honest:
 - **First delta, not first visible text.** The settled `firstTokenTime` counts reasoning and
   tool-call deltas too, and `legacy.partial` only appears once the step has visible content —
   so the moment a new partial key appears *is* the first-token moment.
+- **Counting from `step/start`, not from the first visible block.** Chat's `legacy.partial`
+  waits for a visible block — a **1.9 s median** (p90 2.9 s) after the step begins, which is
+  most of what a first-token latency measures. Reading only Chat therefore made the figure
+  appear at its final value with no visible growth. The Trajectory domain instead opens its
+  assistant record on `step/start` itself, and that record reaches the snapshot's `requests[]`
+  with `status: "running"` and an exact `startedAt` — `step/start` is a location boundary, so
+  the conversation assembler raises the publication priority from the definition's declared
+  `none` to `immediate`. The plugin uses that to know the step is live and where it started,
+  so the figure climbs as `now − startedAt` and then locks to `firstTokenTime − startedAt`,
+  the same subtraction the settled row performs.
 
 ## First-token time for replayed history
 

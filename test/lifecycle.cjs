@@ -1268,6 +1268,100 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   )
 
   /*
+   * The reading must start at `step/start`, not at the step's first visible block.
+   *
+   * `legacy.partial` only appears once a step has visible content — a 1.9 s median after
+   * the step begins — which is almost the whole first-token latency. The Trajectory domain
+   * opens its assistant record on `step/start` and publishes `startedAt` immediately, so
+   * reading its running request is what lets the figure count up from zero instead of
+   * appearing at its final value.
+   */
+  {
+    /*
+     * The figure is `now − startedAt`, and the shim's `useState` freezes `now` at the first
+     * render, so the start must be anchored before any render of this component. A fresh
+     * unmount/remount gives that: the interval never ticks in the shim, which is exactly the
+     * single-frame case a growth reading has to get right.
+     */
+    const stepStart = Date.now() - 1_200
+    // Trajectory reports the step as running, with no tokens yet.
+    trajectorySnapshot = {
+      eventNodes: [],
+      requests: [
+        { purpose: 'assistant', turn: 21, step: 0, startedAt: stepStart, completedAt: null, status: 'running', startSeq: 500 },
+      ],
+      partial: null,
+    }
+    const earlySnapshot = {
+      legacy: {
+        nodes: [],
+        turnTimings: new Map([[21, { startTime: stepStart }]]),
+        partial: null, // no Chat partial yet — this is the case that used to show nothing
+        runningCalls: [],
+      },
+    }
+    const earlyProps = {
+      ...statusInject,
+      useChat: (sel) => sel(earlySnapshot),
+      useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+      useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+      useTrajectory: (sel) => sel(trajectorySnapshot),
+      t,
+    }
+    // Fresh frames so the hook that caches `now` initialises against this clock.
+    runtime.reset()
+    const earlyTree = await runtime.render(status.component, earlyProps)
+    const earlyTrigger = findAll(earlyTree, (el) => String(el.props.className ?? '').includes('dsh-rum-live'))[0]
+    assert(
+      'a step is live from step/start, before any Chat partial exists',
+      earlyTrigger !== undefined,
+    )
+    const earlyTtft = findAll(earlyTrigger, (el) => el.props['data-metric'] === 'ttft')[0]
+    const earlyShown = normalize(textOf(earlyTtft ?? earlyTrigger))
+    assert(
+      'the first-token figure counts up from the step start instead of showing a dash',
+      (() => {
+        const value = Number.parseFloat(earlyShown)
+        // ~1.2 s have elapsed since startedAt; it must be a positive, plausible number.
+        return Number.isFinite(value) && value > 0.5 && value < 10
+      })(),
+    )
+    assert(
+      'the growing figure comes from the Trajectory running request',
+      /function runningRequestOf\(/.test(source) &&
+        /request\.status !== 'running'/.test(source) &&
+        /request\?\.startedAt/.test(source) &&
+        /firstTokenAt \?\? now/.test(source),
+    )
+
+    // Once the token mark arrives the same subtraction as the settled row takes over.
+    trajectorySnapshot = {
+      eventNodes: [],
+      requests: [
+        { purpose: 'assistant', turn: 21, step: 0, startedAt: stepStart, completedAt: null, status: 'running', startSeq: 500 },
+      ],
+      partial: { turn: 21, step: 0, blocks: [{ kind: 'text', text: 'abc' }], timing: { stepStartTime: stepStart, firstTokenTime: stepStart + 400 } },
+    }
+    const markedTree = await runtime.render(status.component, earlyProps)
+    const markedTrigger = findAll(markedTree, (el) => String(el.props.className ?? '').includes('dsh-rum-live'))[0]
+    const markedTtft = findAll(markedTrigger, (el) => el.props['data-metric'] === 'ttft')[0]
+    const markedShown = normalize(textOf(markedTtft ?? markedTrigger))
+    assert(
+      'the figure freezes at the recorded first-token time',
+      // firstTokenTime - startedAt = 400 ms → "0.4 s"
+      markedShown.includes('0.4'),
+    )
+    assert(
+      'the exact mark is preferred over the local observation',
+      /firstTokenOfStep\(trajectory, key\)/.test(source) &&
+        /const partial = trajectorySnapshot\?\.partial/.test(source) &&
+        /partial\.timing\?\.firstTokenTime/.test(source),
+    )
+
+    trajectorySnapshot = { eventNodes: [], requests: [], partial: null }
+  }
+
+  /*
    * Tool-call arguments while they stream.
    *
    * `legacy.partial.blocks` carries NO argument text during a call: the store's

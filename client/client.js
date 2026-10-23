@@ -1324,12 +1324,76 @@ window.__ModuleLoader__.load({
       return text
     }
 
-    function useLiveReading(useChat, enabled) {
+    /**
+     * The assistant request the Trajectory domain currently has in flight.
+     *
+     * This is the earliest signal a browser-only plugin can get. The Chat store's
+     * `legacy.partial` only appears once a step has a visible block — measured against a
+     * real log, that is a 1.9 s median (p90 2.9 s) after the step starts, which is exactly
+     * the span a first-token latency mostly measures. The Trajectory domain instead opens
+     * its assistant record on `step/start` itself and publishes the whole step boundary
+     * immediately, so `startedAt` is available from the first frame of the step.
+     *
+     * `step/start` is a location boundary, and the conversation assembler raises that
+     * publication to "immediate" even though the definition itself asks for "none".
+     *
+     * Returns undefined when the domain has settled or not assembled.
+     */
+    function runningRequestOf(trajectorySnapshot) {
+      const requests = trajectorySnapshot?.requests
+      if (!Array.isArray(requests)) return undefined
+      let latest
+      for (const request of requests) {
+        if (request === null || typeof request !== 'object') continue
+        if (request.purpose !== 'assistant') continue
+        if (request.status !== 'running') continue
+        if (latest === undefined || (request.startSeq ?? 0) >= (latest.startSeq ?? 0)) latest = request
+      }
+      return latest
+    }
+
+    /**
+     * The first-token moment the Trajectory domain already reconstructed for a step.
+     *
+     * `requests[]` carries only `startedAt` / `completedAt`, so the token mark comes from
+     * the running step's `partial` timeline, or — once settled — from the node's `timing`.
+     */
+    function firstTokenOfStep(trajectorySnapshot, key) {
+      const partial = trajectorySnapshot?.partial
+      if (partial !== null && partial !== undefined) {
+        const at = numberOrNull(partial.timing?.firstTokenTime)
+        if (at !== null) return at
+      }
+      const nodes = trajectorySnapshot?.eventNodes
+      if (!Array.isArray(nodes)) return null
+      for (const node of nodes) {
+        if (node === null || typeof node !== 'object') continue
+        if (node.kind !== 'assistant') continue
+        if (`${node.turn}:${node.step}` !== key) continue
+        const at = numberOrNull(node.timing?.firstTokenTime)
+        if (at !== null) return at
+      }
+      return null
+    }
+
+    function useLiveReading(useChat, enabled, trajectory) {
       const partial = useChat((snapshot) => snapshot.legacy.partial)
       const nodes = useChat((snapshot) => snapshot.legacy.nodes)
       const turnTimings = useChat((snapshot) => snapshot.legacy.turnTimings)
       const runningCalls = useChat((snapshot) => snapshot.legacy.runningCalls)
-      const running = enabled && partial !== null && partial !== undefined
+
+      /*
+       * A step is live from `step/start`, not from its first visible block. The Trajectory
+       * domain reports that step immediately; `legacy.partial` is the fallback for a
+       * composition without it.
+       */
+      const request = runningRequestOf(trajectory)
+      const liveStep = request === undefined
+        ? partial === null || partial === undefined
+          ? null
+          : { turn: partial.turn, step: partial.step }
+        : { turn: request.turn, step: request.step }
+      const running = enabled && liveStep !== null
       const [now, setNow] = useState(() => Date.now())
       const observation = useRef({ key: null, firstTokenAt: null })
 
@@ -1339,38 +1403,69 @@ window.__ModuleLoader__.load({
         return () => clearInterval(id)
       }, [running])
 
+      /*
+       * The first-token mark of the running step, from the tightest source available: the
+       * Trajectory timeline (exact, reconstructed by that domain), else the moment a new
+       * partial key first appeared — `legacy.partial` only exists once the step has visible
+       * content, so that appearance IS the first delta.
+       */
       useEffect(() => {
         if (!running) {
           observation.current = { key: null, firstTokenAt: null }
           return
         }
-        const key = `${partial.turn}:${partial.step}`
-        if (observation.current.key !== key) {
-          // A new step appeared with content already: its first delta just arrived.
-          observation.current = { key, firstTokenAt: Date.now() }
+        const key = `${liveStep.turn}:${liveStep.step}`
+        const exact = firstTokenOfStep(trajectory, key)
+        if (exact !== null) {
+          observation.current = { key, firstTokenAt: exact }
           return
         }
-        if (observation.current.firstTokenAt === null && blocksHaveText(partial.blocks)) {
+        if (observation.current.key !== key) {
+          observation.current = { key, firstTokenAt: null }
+          return
+        }
+        if (
+          observation.current.firstTokenAt === null &&
+          partial !== null &&
+          partial !== undefined &&
+          blocksHaveText(partial.blocks)
+        ) {
           observation.current = { key, firstTokenAt: Date.now() }
         }
-      }, [running, partial])
+      }, [running, liveStep, trajectory, partial])
 
       if (!running) return null
 
-      const start = stepStartOf(partial, nodes, turnTimings)
+      /*
+       * The step's origin: the Trajectory domain's own `startedAt` (exact, present from
+       * `step/start`), else the tool-result reconstruction, else the turn's start.
+       */
+      const start =
+        numberOrNull(request?.startedAt) ?? stepStartOf(liveStep, nodes, turnTimings)
+      const key = `${liveStep.turn}:${liveStep.step}`
       const firstTokenAt = observation.current.firstTokenAt
       /*
        * Blocks cover the prose and reasoning; a preparing tool call's arguments live only
        * on `runningCalls`, so count those separately at the tool-argument coefficient.
        */
-      const tokens =
-        estimateTokens(partial.blocks) +
-        Math.round(tokensOfSegment(preparingArgsText(runningCalls), CHARS_PER_TOKEN_TOOL_ARGS))
-      const ttftMs = start !== null && firstTokenAt !== null ? Math.max(0, firstTokenAt - start) : null
+      const tokens = partial === null || partial === undefined
+        ? Math.round(tokensOfSegment(preparingArgsText(runningCalls), CHARS_PER_TOKEN_TOOL_ARGS))
+        : estimateTokens(partial.blocks) +
+          Math.round(tokensOfSegment(preparingArgsText(runningCalls), CHARS_PER_TOKEN_TOOL_ARGS))
+
+      /*
+       * Until the first token arrives the reading counts up from the step's own start —
+       * that is what makes the figure visibly grow instead of appearing at its final value.
+       * Once it arrives, the same subtraction the settled row performs takes over, so the
+       * number freezes rather than jumping.
+       */
+      const ttftMs = start === null
+        ? null
+        : Math.max(0, (firstTokenAt ?? now) - start)
       const elapsedMs = start !== null ? Math.max(0, now - start) : null
       const decodeMs = firstTokenAt !== null ? Math.max(0, now - firstTokenAt) : null
       return {
-        key: `${partial.turn}:${partial.step}`,
+        key,
         at: start ?? now,
         ttftMs,
         totalMs: elapsedMs,
@@ -1652,19 +1747,24 @@ window.__ModuleLoader__.load({
       const { useChat, useGeek, useRows, record, seed, backfill, t } = props
       const geek = useGeek((value) => value) === GEEK
       const rows = useRows((value) => value)
-      const live = useLiveReading(useChat, geek)
-      const nodes = useChat((snapshot) => snapshot.legacy.nodes)
       /*
-       * The Trajectory domain's first-token times. `useTrajectory` is a standard slot prop,
-       * but it is read defensively: a composition without that domain simply yields no
-       * index and the drawer keeps showing `--` for undated history.
+       * The Trajectory domain's snapshot. `useTrajectory` is a standard slot prop, read
+       * defensively: a composition without that domain yields `undefined` and everything
+       * below falls back to the Chat snapshot alone.
        *
-       * The index is memoized on the snapshot, which is a stable reference between
-       * publications — without this the effect below would see a new Map every render and
-       * never settle.
+       * It is read before the live reading because that reading needs the domain's own
+       * running-step record: the Chat store only publishes a step once it has visible
+       * content, which is a 1.9 s median after the step begins.
        */
       const useTrajectory = props.useTrajectory
       const trajectory = typeof useTrajectory === 'function' ? useTrajectory((snapshot) => snapshot) : undefined
+      const live = useLiveReading(useChat, geek, trajectory)
+      const nodes = useChat((snapshot) => snapshot.legacy.nodes)
+      /*
+       * The first-token times for replayed history. The index is memoized on the snapshot,
+       * which is a stable reference between publications — without this the effect below
+       * would see a new Map every render and never settle.
+       */
       const firstTokens = useMemo(
         () => (trajectory === undefined || trajectory === null ? NO_FIRST_TOKENS : firstTokenIndex(trajectory)),
         [trajectory],
