@@ -1382,22 +1382,61 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Best available start for the running step: the latest settled step's completion in
-     * the same turn, else the turn's own start (exact for a turn's first step, which
-     * begins ~26 ms after the turn in a real log).
+     * The moment the running step actually began.
+     *
+     * `timing.completedTime` is NOT a step's end: Chat sets it to the `assistant/message`
+     * event time, which lands *before* the step's tools run. Using it as the next step's
+     * origin counts the whole tool execution into that step's live TTFT — in a real
+     * session log that gap has a 243 ms median but reaches 120 s, which is why a live
+     * reading could show six seconds and settle at two.
+     *
+     * What does mark the end of a step's work is its last tool result: measured over
+     * 1038 steps, a step's final `tool/result` sits within 1 ms of its `step/end`, and
+     * the next step starts a median 9 ms later. So the latest tool result of the previous
+     * step is the tightest origin a browser-only plugin can reach — p50 9 ms and p99
+     * 486 ms, against p50 243 ms and p99 20.8 s for the old field.
+     *
+     * A settled tool node carries no turn/step, only `seq`, `time` and `callTime`
+     * (`kind: 'tool-result'`), so attribution runs on the seq window: the tool results
+     * belonging to step S-1 are sequenced between the assistant nodes of S-1 and S. Seq
+     * rather than timestamp, because a resumed log replays steps and times repeat.
+     *
+     * Three cases, in order: the last tool result of the previous step; that step's own
+     * completion when it ran no tools (it was the turn's final answer, so nothing follows
+     * it); the turn's own start for a turn's first step (a real log puts that 26 ms in).
      */
     function stepStartOf(partial, nodes, turnTimings) {
       const turn = partial?.turn
       const step = partial?.step
-      let previous = null
-      for (const node of nodes ?? []) {
-        if (!isAssistantNode(node)) continue
-        if (node.turn !== turn) continue
-        if (!(node.step < step)) continue
-        const completed = numberOrNull(node.timing?.completedTime)
-        if (completed !== null && (previous === null || completed > previous)) previous = completed
+      if (typeof turn !== 'number' || typeof step !== 'number') return null
+
+      const assistants = (nodes ?? []).filter(isAssistantNode)
+      const findStep = (target) =>
+        assistants.find((node) => node.turn === turn && node.step === target)
+
+      const previousNode = findStep(step - 1)
+      if (previousNode !== undefined) {
+        const previousSeq = numberOrNull(previousNode.seq)
+        const currentSeq = numberOrNull(findStep(step)?.seq) ?? Number.POSITIVE_INFINITY
+
+        let lastToolTime = null
+        if (previousSeq !== null) {
+          for (const node of nodes ?? []) {
+            if (node === null || typeof node !== 'object') continue
+            if (node.kind !== 'tool-result') continue
+            const seq = numberOrNull(node.seq)
+            if (seq === null || seq <= previousSeq || seq >= currentSeq) continue
+            const at = numberOrNull(node.time)
+            if (at !== null && (lastToolTime === null || at > lastToolTime)) lastToolTime = at
+          }
+        }
+        if (lastToolTime !== null) return lastToolTime
+
+        // No tools: that step ended the turn's work, so its own completion is the mark.
+        const completed = numberOrNull(previousNode.timing?.completedTime)
+        if (completed !== null) return completed
       }
-      if (previous !== null) return previous
+
       return numberOrNull(turnTimings?.get?.(turn)?.startTime)
     }
 

@@ -168,11 +168,19 @@ that approximation honest:
 - **A step-level origin.** The settled figure is `firstToken − stepStart`, so the live one
   must use the same origin. Subtracting the *turn* start instead overstates TTFT by
   everything earlier in the turn: in a real session log the gap from turn start to a later
-  step's start has a **174 s median** and reaches **2720 s**, and 549 of 558 non-first steps
-  exceed one second. That is why a live reading could show tens of seconds while reasoning
-  yet a few seconds once the step settled. The plugin now uses the latest settled step's
-  completion in the same turn as the step start, falling back to the turn's start only for
-  a turn's first step (which begins ~26 ms after it).
+  step's start has a **174 s median** and reaches **2720 s**. That is why a live reading
+  could show tens of seconds while reasoning yet a few seconds once the step settled.
+- **A tool result, not `completedTime`.** `timing.completedTime` is the `assistant/message`
+  time, which lands *before* the step's tools run. Using it as the next step's origin counts
+  the whole tool execution into that step's TTFT — measured, that gap has a 243 ms median but
+  reaches **120 s**, which is exactly the "six seconds while streaming, two once it settles"
+  symptom. A step's last `tool/result` sits within 1 ms of its own `step/end` and a median
+  9 ms before the next `step/start`, making it the tightest origin a browser-only plugin can
+  reach. Attribution runs on the **seq window**, not timestamps: a resumed log replays steps
+  and times repeat. Over 1113 steps the origin error fell from p50 100 ms / p99 20.8 s to
+  **p50 9 ms / p99 486 ms**, and steps off by more than a second from 114 to **1**. A step
+  that ran no tools falls back to its own `completedTime` (it was the turn's final answer, so
+  nothing follows it), and a turn's first step to the turn's start (26 ms earlier).
 - **First delta, not first visible text.** The settled `firstTokenTime` counts reasoning and
   tool-call deltas too, and `legacy.partial` only appears once the step has visible content —
   so the moment a new partial key appears *is* the first-token moment.

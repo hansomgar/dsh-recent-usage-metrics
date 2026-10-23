@@ -1371,11 +1371,80 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       })(),
     )
     assert(
-      'the live step start is the previous step completion, not the turn start',
+      'the previous step ran no tools, so its completion is the origin',
+      // `completedTime` is only reached when the caller's step had no tool results.
       /function stepStartOf\(/.test(source) &&
-        /node\.timing\?\.completedTime/.test(source) &&
-        /node\.step < step/.test(source) &&
+        /const completed = numberOrNull\(previousNode\.timing\?\.completedTime\)/.test(source) &&
         /turnTimings\?\.get\?\.\(turn\)\?\.startTime/.test(source),
+    )
+  }
+
+  /*
+   * The tool-result origin.
+   *
+   * `timing.completedTime` is the `assistant/message` time, which lands BEFORE a step's
+   * tools run. Using it as the next step's origin counted the entire tool execution into
+   * the live TTFT — a 243 ms median, but reaching 120 s in a real log. A step's last
+   * `tool/result` sits within 1 ms of its `step/end`, so that is the tight origin.
+   */
+  {
+    const turnStart = Date.now() - 200_000
+    const previousDone = Date.now() - 60_000      // the assistant message of step 0
+    const toolDone = Date.now() - 3_000           // step 0's tool finished much later
+    const toolStep = {
+      legacy: {
+        nodes: [
+          {
+            kind: 'assistant',
+            seq: 100,
+            turn: 11,
+            step: 0,
+            timing: { stepStartTime: turnStart, firstTokenTime: turnStart + 300, completedTime: previousDone },
+            usage: { outputTokens: 50 },
+            blocks: [{ kind: 'text', text: 'q' }],
+          },
+          // A settled tool node: no turn/step, only seq/time — attributed by seq window.
+          { kind: 'tool-result', seq: 110, time: toolDone, callTime: previousDone + 10, callId: 'c1' },
+          { kind: 'tool-result', seq: 111, time: toolDone + 50, callTime: toolDone, callId: 'c2' },
+          // A tool result belonging to a LATER step must be excluded by the window.
+          { kind: 'tool-result', seq: 200, time: Date.now() - 100, callTime: toolDone, callId: 'c3' },
+        ],
+        turnTimings: new Map([[11, { startTime: turnStart }]]),
+        partial: { turn: 11, step: 1, blocks: [{ kind: 'text', text: 'abcd' }] },
+      },
+    }
+    const toolProps = {
+      ...statusInject,
+      useChat: (sel) => sel(toolStep),
+      useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+      useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+      t,
+    }
+    const toolTree = await runtime.render(status.component, toolProps)
+    const toolTrigger = findAll(toolTree, (el) => String(el.props.className ?? '').includes('dsh-rum-live'))[0]
+    const toolTtft = findAll(toolTrigger, (el) => el.props['data-metric'] === 'ttft')[0]
+    const toolShown = normalize(textOf(toolTtft ?? toolTrigger))
+    assert(
+      'a step after a tool call measures from that tool result, not the assistant message',
+      /*
+       * The tool finished ~3 s ago, the assistant message was 60 s ago. From the tool
+       * result the reading is single-digit seconds; from `completedTime` it would be ~60.
+       */
+      (() => {
+        const value = Number.parseFloat(toolShown)
+        return Number.isFinite(value) && value < 20
+      })(),
+    )
+    assert(
+      'tool results are attributed by seq window, not by timestamp',
+      // A resumed log replays steps, so timestamps repeat; seq is the stable ordering.
+      /node\.kind !== 'tool-result'/.test(source) &&
+        /seq <= previousSeq \|\| seq >= currentSeq/.test(source) &&
+        /lastToolTime === null \|\| at > lastToolTime/.test(source),
+    )
+    assert(
+      'a tool result outside the window is ignored',
+      /const currentSeq = numberOrNull\(findStep\(step\)\?\.seq\) \?\? Number\.POSITIVE_INFINITY/.test(source),
     )
   }
 
