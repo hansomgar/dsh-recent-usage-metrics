@@ -7,6 +7,12 @@ native **Performance & usage** preference in Settings → General, and while tha
 is active it keeps a live reading of the newest request in the composer status row
 plus a glass drawer with the last ten requests.
 
+![The drawer: recent request metrics](assets/screenshot-1.png)
+
+The drawer open: the step still streaming sits on top (its first-token figure climbing,
+speed shown as `—`), the last ten requests follow newest first, and their average closes
+the list. The status pill sits below it, its columns aligned with the table's.
+
 ## What you get
 
 **Settings → General → Performance & usage** now offers three levels:
