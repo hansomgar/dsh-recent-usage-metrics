@@ -1,6 +1,9 @@
 # Scratch space used while developing or debugging this plugin.
 .scratch/
 
+# Prepared assets for the awesome-dsh-plugin submission PR.
+.submission/
+
 # Editor and OS noise.
 .vscode/
 .idea/

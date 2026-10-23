@@ -718,7 +718,7 @@ token 估算每 150 ms 重扫全部累积文本：
   README.md                                ← 中文，仓库默认显示
   README.en.md                             ← 英文，从 README.md 顶部切换
   需求.txt                                 ← 本文件
-  test/lifecycle.cjs                       ← 主测试（129 项断言）
+  test/lifecycle.cjs                       ← 主测试（128 项断言）
   test/repro-coldstart.cjs                 ← 冷启动 i18n 回归（17 项）
   test/repro-hmr.cjs                       ← HMR 字典占用回归（5 项）
 
