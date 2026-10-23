@@ -189,54 +189,154 @@
   拟合出来是噪声。
 
 ================================================================================
-五、实时（生成中）指标怎么算 —— 两个已修复的坑，必须按此实现
+五、实时（生成中）指标怎么算 —— 三个已修复的坑，必须按此实现
 ================================================================================
 
 生成中的请求在 Chat 快照里只有 legacy.partial = { turn, step, blocks }。
 它【没有】任何时间字段，所以实时指标需要自己推导。
 
-坑 1：首字时间的起点必须用「步骤起点」，不能用「轮次起点」
-------------------------------------------------------------------
-真实日志实测：同一轮里，从轮次开始到第 2 步及以后各步开始的间隔，
-中位数 174 秒，最大 2720 秒，549/558 个非首步超过 1 秒。
-若用 turnTimings 里的轮次起点，实时首字会显示几十秒；
-等这轮结束变成精确值时又变回几秒 —— 这正是"思考中显示几十秒、完成后只有几秒"的成因。
+要在生成中看到首字「由小变大」，必须同时满足两件事：
+  1) 起点正确（不能把工具执行、轮次前序算进去）
+  2) 起点要在「首个 token 到达之前」就可得（否则数字一出现就是终值）
 
-正确做法：用「同轮中最近一个已结算步骤的 completedTime」作为步骤起点
-（下一步紧接着它开始），只有整轮第一步才回退到轮次起点（实测仅差 26 ms）。
+坑 1：起点不能用「轮次起点」，也不能用「上一步的 completedTime」
+------------------------------------------------------------------
+（1a）轮次起点
+真实日志实测：同一轮里，从轮次开始到第 2 步及以后各步开始的间隔，
+中位数 174 秒，最大 2720 秒。若用它，实时首字会显示几十秒，
+等这轮结束变成精确值时又变回几秒。
+
+（1b）上一步的 completedTime —— 这是一个更隐蔽的错误
+Chat 的 timing.completedTime 取自 assistant/message 事件，落在该步
+【工具执行之前】。把它当下一步的起点，就会把整个工具执行时间算进去：
+实测该间隔中位数 243 毫秒，最大 120 秒 —— 正是
+「生成中显示 6 秒、结算后变成 2 秒」的成因。
+
+正确起点是本步自己的 step/start 时刻。三个来源按优先级：
+
+  优先级 1：轨迹域的 requests[] 里的 startedAt（最准，且最早可得，见坑 2）
+  优先级 2：上一步最后一个 tool/result 的 time（轨迹域不可用时的兜底）
+  优先级 3：轮次起点（本轮第一步，实测仅差 26 ms）
+
+优先级 2 的依据：一步的最后一个 tool/result 距它自己的 step/end 不超过 1 毫秒
+（实测 p99=1ms），距下一步 step/start 中位数只有 9 毫秒。
+归属必须用【seq 区间】而不是时间戳 —— 续写的会话日志会重放步骤，时间戳会重复，
+按时间戳取最大值会算出 6.7 小时这类荒谬结果。
 
     function stepStartOf(partial, nodes, turnTimings) {
       const turn = partial?.turn
       const step = partial?.step
-      let previous = null
-      for (const node of nodes ?? []) {
-        if (!isAssistantNode(node)) continue
-        if (node.turn !== turn) continue
-        if (!(node.step < step)) continue
-        const completed = numberOrNull(node.timing?.completedTime)
-        if (completed !== null && (previous === null || completed > previous)) previous = completed
+      if (typeof turn !== 'number' || typeof step !== 'number') return null
+
+      const assistants = (nodes ?? []).filter(isAssistantNode)
+      const findStep = (target) =>
+        assistants.find((node) => node.turn === turn && node.step === target)
+
+      const previousNode = findStep(step - 1)
+      if (previousNode !== undefined) {
+        const previousSeq = numberOrNull(previousNode.seq)
+        const currentSeq = numberOrNull(findStep(step)?.seq) ?? Number.POSITIVE_INFINITY
+
+        let lastToolTime = null
+        if (previousSeq !== null) {
+          for (const node of nodes ?? []) {
+            if (node === null || typeof node !== 'object') continue
+            if (node.kind !== 'tool-result') continue
+            const seq = numberOrNull(node.seq)
+            if (seq === null || seq <= previousSeq || seq >= currentSeq) continue
+            const at = numberOrNull(node.time)
+            if (at !== null && (lastToolTime === null || at > lastToolTime)) lastToolTime = at
+          }
+        }
+        if (lastToolTime !== null) return lastToolTime
+
+        // 该步没有调用工具：它是本轮最终回答，后面不再有工具，用它自己的完成时刻。
+        const completed = numberOrNull(previousNode.timing?.completedTime)
+        if (completed !== null) return completed
       }
-      if (previous !== null) return previous
+
       return numberOrNull(turnTimings?.get?.(turn)?.startTime)
     }
 
-坑 2：首字时刻以「新 partial key 出现的那一刻」为准
---------------------------------------------------
-精确值的 firstTokenTime 由 Chat 从 token 增量累积，reasoning 和 tool-call 增量都算。
-而 legacy.partial 只在步骤有可见内容后才出现，所以「新的 key 出现的瞬间」就是首字时刻。
-不要等 blocks 里出现非空 text 才记时 —— 那会让长推理的步骤首字明显偏大。
+  实测（1113 个步骤，起点误差 vs 真实的 step/start）：
+    旧（completedTime）：p50 100ms，p90 1281ms，p99 20758ms，最大 120522ms，超 1 秒 114 步
+    新（工具结果）    ：p50   9ms，p90   55ms，p99   486ms，最大  22343ms，超 1 秒   1 步
+    改善 1069 步，变差 0 步。
 
-    useEffect(() => {
-      if (!running) { observation.current = { key: null, firstTokenAt: null }; return }
-      const key = `${partial.turn}:${partial.step}`
-      if (observation.current.key !== key) {
-        observation.current = { key, firstTokenAt: Date.now() }
-        return
+坑 2：判断「正在运行」和取起点，都必须用轨迹域，不能用 legacy.partial
+----------------------------------------------------------------------
+这是「看不到首字增长」的真正原因。
+
+Chat 的 legacy.partial 要等第一个【可见块】才出现。实测（1144 个步骤）：
+  step/start → 第一个 block      ：中位数 1956ms，p90 3054ms
+  第一个 block → 首个 token      ：中位数    0ms，p90   15ms，p99 37ms
+
+也就是说：partial 出现的那一刻，首个 token 几乎同时到达。
+如果以「partial 是否存在」判断是否在运行，那么实时读数一出现就已经是终值，
+永远看不到增长过程；而它出现之前，整个实时读数根本不存在（显示的是上一条旧记录）。
+
+正确做法：用轨迹域。它在 step/start 那一刻就建立该步的 assistant 记录，
+快照的 requests[] 里带 status:"running" 与精确的 startedAt。
+
+依据（读源码确认，不要凭猜测改）：
+  - 轨迹域的 assistant 定义 match 包含 step/start，start 钩子把 started 置真
+  - assistantRequest() 只要求 state.started，不需要任何 block
+  - 该定义自己声明 publication: "none"，但会话装配层会把它提上来：
+      if (event.type !== "assistant/live-chunk" && isLocationBoundary(event.type)) {
+        const changed = this.locationIndex.appendBoundary(event)
+        if (changed.size > 0) publication = "immediate"
       }
-      if (observation.current.firstTokenAt === null && blocksHaveText(partial.blocks)) {
-        observation.current = { key, firstTokenAt: Date.now() }
+      publication = maximumPublication(publication, this.matchInput(record))
+    isLocationBoundary 包含 step/start；PUBLICATION_RANK = { none:0, "animation-frame":1, immediate:2 }
+    maximumPublication 取较大者，所以 immediate(2) > none(0)，step/start 会立即发布。
+
+    function runningRequestOf(trajectorySnapshot) {
+      const requests = trajectorySnapshot?.requests
+      if (!Array.isArray(requests)) return undefined
+      let latest
+      for (const request of requests) {
+        if (request === null || typeof request !== 'object') continue
+        if (request.purpose !== 'assistant') continue
+        if (request.status !== 'running') continue
+        if (latest === undefined || (request.startSeq ?? 0) >= (latest.startSeq ?? 0)) latest = request
       }
-    }, [running, partial])
+      return latest
+    }
+
+首字时刻的取法（requests[] 里没有 firstTokenTime，要另外取）：
+
+    function firstTokenOfStep(trajectorySnapshot, key) {
+      const partial = trajectorySnapshot?.partial
+      if (partial !== null && partial !== undefined) {
+        const at = numberOrNull(partial.timing?.firstTokenTime)
+        if (at !== null) return at
+      }
+      const nodes = trajectorySnapshot?.eventNodes
+      if (!Array.isArray(nodes)) return null
+      for (const node of nodes) {
+        if (node === null || typeof node !== 'object') continue
+        if (node.kind !== 'assistant') continue
+        if (`${node.turn}:${node.step}` !== key) continue
+        const at = numberOrNull(node.timing?.firstTokenTime)
+        if (at !== null) return at
+      }
+      return null
+    }
+
+最终的首字计算 —— 分两阶段，这是「看到增长」的关键：
+  - 首个 token 未到：now − startedAt  → 每个 150ms tick 都会变大
+  - 首个 token 已到：firstTokenTime − startedAt → 锁定，与结算值是同一个减法
+
+    const ttftMs = start === null
+      ? null
+      : Math.max(0, (firstTokenAt ?? now) - start)
+
+【禁止】
+- 不要用 legacy.partial 是否存在来判断「正在运行」——那会让增长过程消失。
+- 不要把 stepStartOf() 当成首选起点；它只是轨迹域不可用时的兜底。
+- 兜底路径下看不到增长（因为拿不到 step/start），但数值仍准确，这是可接受的降级。
+
+注意：useTrajectory 必须在 useLiveReading 之前读取，以保持 hook 调用顺序稳定。
 
 坑 3：工具调用参数在流式期间不在 blocks 里，必须另外读
 --------------------------------------------------------
@@ -507,6 +607,9 @@ Chat 的 finalNode() 【不透传】stream，所以插件从 legacy.nodes 拿不
       () => (trajectory === undefined || trajectory === null ? NO_FIRST_TOKENS : firstTokenIndex(trajectory)),
       [trajectory],   // 必须 memo，否则 effect 每次渲染都看到新 Map，永不收敛
     )
+
+【顺序约束】在 GeekStatus 里，useTrajectory 必须在 useLiveReading 之前读取 ——
+第五节的首字增长逻辑要用到同一个快照。hook 的调用顺序必须稳定，不能放进条件分支。
 
 【必须处理的时序问题】轨迹域是另一个插件的投影，它的数据可能晚于本插件首次回填才就绪。
 只"回填时读一次"的话，那些行会永久停在 —。因此要有一个补写通道：
@@ -864,7 +967,8 @@ export function apply() {}
     durationSlot / secondsText / speedText / tokensText / clockText / agoText
     Tilde / BoltIcon / ChevronIcon / CheckIcon / OptionsMenu
     PerformanceUsageRow                                                ← 第二节的设置行
-    preparingArgsText / useLiveReading / stepStartOf                   ← 第五节
+    preparingArgsText / runningRequestOf / firstTokenOfStep            ← 第五节
+    useLiveReading / stepStartOf                                       ← 第五节
     useAnimatedRows                                                    ← 第七节
     drawerContentInset / pillContentInset                              ← 第七节对齐
     averageOf / AverageRow                                             ← 第七节平均值
@@ -937,3 +1041,7 @@ README.md 为中文且是仓库默认展示的首页；README.en.md 为英文，
 [ ] 完全重启 DSH 后仍是中文，且可双向切换
 [ ] 写文件/调用工具时，token 数在流式过程中持续增长（不是结束时才跳）
 [ ] 会话历史回填的行，在打开过轨迹页后首字时间能显示出来
+[ ] 【首字增长】生成中首字从 0.0 s 开始持续变大，首个 token 到达后停住不再变化
+[ ] 【首字不跳变】首字在生成中与结算后数值基本一致，不再出现 6.0 s → 2.0 s 那种回落
+[ ] 【工具步骤也增长】上一步刚跑完工具时，本步首字从接近 0 开始，不把工具耗时算进来
+
