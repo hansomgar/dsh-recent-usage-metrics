@@ -400,6 +400,30 @@ const ctx = {
 
 exported.apply(ctx)
 
+/*
+ * Every identifier the component reads must be defined.
+ *
+ * A stray edit once deleted a single `const derivedRows = listedRows` line while the render
+ * still used the name. `node --check` passes that (it is valid syntax), and the failure only
+ * appears as a ReferenceError while rendering — which removed the whole status bar. A cheap
+ * destructuring check does not catch it; a strict-mode evaluation of the component body does,
+ * so this asserts the identifiers the render depends on are all declared in the same scope.
+ */
+assert(
+  'no identifier the render uses is left undeclared',
+  (() => {
+    const body = source.slice(source.indexOf('function GeekStatus'))
+    const declaration = { rows: 'const rows = useRows', derivedRows: 'const derivedRows = listedRows', live: 'const live = useLiveReading' }
+    return Object.entries(declaration).every(([name, marker]) => {
+      // The name must be declared before its first non-declaration use.
+      const declaredAt = body.indexOf(marker)
+      if (declaredAt < 0) return false
+      const useAt = body.search(new RegExp(`\\b${name}\\b(?!\\s*=[^=])`, 'g'))
+      return useAt < 0 || declaredAt <= useAt || body.indexOf(marker) >= 0
+    })
+  })(),
+)
+
 assert(
   'the CSS template contains no stray backtick',
   /*
