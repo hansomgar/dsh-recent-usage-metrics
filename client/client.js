@@ -2391,7 +2391,8 @@ window.__ModuleLoader__.load({
                 h(
                   'span',
                   { className: 'dsh-rum-head-count' },
-                  live === null ? t('drawerCount', { count: rows.length }) : t('drawerLive'),
+                  /* The header counts what the list below actually holds, not the model's copy of it. */
+                  live === null ? t('drawerCount', { count: derivedRows.length }) : t('drawerLive'),
                 ),
               ),
               h('div', { className: 'dsh-rum-rule', 'aria-hidden': true }),
