@@ -1,0 +1,54 @@
+name: Publish
+
+# Publishes the plugin to npm when a version tag is pushed.
+#
+# Authentication is OIDC trusted publishing: this workflow proves its identity to npm through
+# the `id-token` permission, so no npm token is stored anywhere. The trusted publisher on the
+# package side is configured for this exact repository and workflow filename — renaming either
+# one breaks the connection.
+#
+# Triggering on a tag keeps ordinary commits from publishing: a release is a deliberate act.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Allows a manual run from the Actions tab, which is also how a failed release is retried.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for OIDC trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # npm 11.5.1+ and Node 22.14+ are required for trusted publishing.
+          node-version: '22.14.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Use a recent npm
+        run: npm install -g npm@latest
+
+      - name: Show the version being published
+        run: node -e "console.log('publishing', require('./package.json').name + '@' + require('./package.json').version)"
+
+      - name: Refuse to publish when the tag and the manifest disagree
+        # A mismatch would publish a version nobody asked for, or fail halfway with a tarball
+        # already built. The tag is the source of truth, so the manifest has to match it.
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -e "process.stdout.write(require('./package.json').version)")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG"
+            exit 1
+          fi
+          echo "tag and version agree: $PKG"
+
+      - name: Publish
+        run: npm publish --provenance --access public
