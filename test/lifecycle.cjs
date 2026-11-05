@@ -1238,6 +1238,25 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   let itemRows = findAll(statusTree, (el) => String(el.props.className ?? '').includes('dsh-rum-item'))
   assert('the drawer lists ten rows', itemRows.length === 10)
   assert('the first data row is the newest reading', normalize(textOf(itemRows[0])).startsWith('1 0'))
+
+  /*
+   * The live row and the numbered rows describe different requests.
+   *
+   * While a request is streaming, the live row at the top is its only representation; it
+   * must not also occupy `#1`. The reported defect was exactly that: `#1` and the streaming
+   * row were the same request, so the list looked one row short and `#1` was blank.
+   */
+  {
+    const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
+    assert(
+      'numbered rows exclude the live step by identity, not by timing',
+      /base\.filter\(\(row\) => row\.key !== live\.key\)/.test(clientSource),
+    )
+    assert(
+      'a step with no figures yet takes no numbered row',
+      /if \(!statsStepHasFigures\(entry\.metrics\)\) continue/.test(clientSource),
+    )
+  }
   assert(
     'the drawer clock is the request start, matching the Statistics view',
     /*
@@ -1834,16 +1853,40 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         })
         statusTree = await runtime.render(status.component, statusProps)
         assert(
-          'a running step is listed instead of being skipped',
-          modelRows().length === 1 && modelRows()[0].key === '2:0',
-        )
-        assert(
-          'a running step shows placeholders, not a false zero',
+          'a step that has produced nothing yet does not take a numbered row',
           /*
-           * `0 tok` would be a claim: zero is a real measurement. The row must carry `null`
-           * so the drawer prints its placeholder, and it must not be flagged as estimated.
+           * It exists from `step/start`, but until its first token arrives it is exactly the
+           * request the live row above reports. Giving it a numbered row as well listed the
+           * same request twice, and the numbered one was empty — the reported "#1 and the
+           * streaming row are the same request" defect.
            */
-          modelRows()[0].tokens === null && modelRows()[0].estimated === false,
+          modelRows().length === 0,
+        )
+      }
+
+      /*
+       * A step that HAS produced output but has not reached `step/end` must be listed.
+       *
+       * `endTime` lands after the model turn and its tool calls, so waiting for it left the
+       * drawer several rows short of the Statistics view on a busy turn.
+       */
+      {
+        statsSnapshot = { turns: [] }
+        addStatsStep(2, 0, {
+          startTime: 3_000_000,
+          endTime: null,
+          ttft: 1500,
+          model: null,
+          decode: null,
+          tps: 80,
+          output: 400,
+          wall: null,
+          running: true,
+        })
+        statusTree = await runtime.render(status.component, statusProps)
+        assert(
+          'a running step that has produced output is listed',
+          modelRows().length === 1 && modelRows()[0].key === '2:0' && modelRows()[0].tokens === 400,
         )
       }
 
@@ -1856,16 +1899,19 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
        */
       {
         const before = modelRows()[0]
-        assert('the running row starts without figures', before.tokens === null && before.totalMs === null)
+        assert(
+          'the running row already carries the figures it has',
+          before.tokens === 400 && before.totalMs === null,
+        )
         statsSnapshot = { turns: [] }
         addStatsStep(2, 0, {
-          startTime: 2_000_000,
-          endTime: 2_005_000,
-          ttft: 1200,
+          startTime: 3_000_000,
+          endTime: 3_005_000,
+          ttft: 1500,
           model: 5000,
-          decode: 3800,
-          tps: 65.8,
-          output: 250,
+          decode: 3500,
+          tps: 71.4,
+          output: 400,
           wall: 5000,
           running: false,
         })
@@ -1873,7 +1919,11 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         const after = modelRows()[0]
         assert(
           'settling in place refreshes the row it replaces',
-          after.tokens === 250 && Math.round(after.totalMs) === 5000 && Math.round(after.ttftMs) === 1200,
+          /*
+           * Key and first-token time are unchanged, so this is the case a comparison limited
+           * to those two fields would drop — leaving the drawer without a total.
+           */
+          after.tokens === 400 && Math.round(after.totalMs) === 5000,
         )
         assert(
           'the comparison that decides "unchanged" covers every rendered figure',

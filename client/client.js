@@ -882,18 +882,39 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Whether a statistics step has produced anything worth a drawer row yet.
+     *
+     * A step exists from `step/start`, but reports nothing until its first token arrives,
+     * and `endTime` only lands on `step/end` — after the model turn and its tool calls. A
+     * step with no first-token latency yet is therefore the one the pill already shows as
+     * "streaming": it has no row of its own, or the drawer would print an empty `#1` for it
+     * while the live row above reports the same request.
+     *
+     * `ttft` is the figure that appears exactly when the first token arrives, so it is the
+     * signal for "has anything happened".
+     */
+    function statsStepHasFigures(metrics) {
+      return (
+        numberOrNull(metrics.ttft) !== null ||
+        numberOrNull(metrics.output) !== null ||
+        numberOrNull(metrics.endTime) !== null
+      )
+    }
+
+    /**
      * The newest readings for a session, newest first, capped at the drawer's limit.
      *
-     * A step is included as soon as the statistics fold knows about it, including one that
-     * is still running. Filtering running steps out made the drawer lag the Statistics view
-     * by however many steps were mid-flight: the fold marks a step `running` from
-     * `step/start` until its `step/end`, which spans the whole model turn *and* the tool
-     * calls after it, so the newest three steps of a busy turn were missing from the
-     * drawer while the Statistics page already listed them.
+     * A step is included as soon as it has produced a figure, not only once `step/end`
+     * arrives. Waiting for `step/end` made the drawer lag the Statistics view by however
+     * many steps were mid-flight — that event lands after the model turn *and* its tool
+     * calls, so the newest three rows of a busy turn were missing while the Statistics page
+     * already listed them.
      *
-     * A step with no figures yet still yields a row: the readings come out as null and the
-     * drawer prints its placeholders, which is the same thing the Statistics view shows for
-     * a step that has not produced anything yet.
+     * Conversely a step that has produced nothing yet is left out: the live row at the top
+     * of the drawer reports that request, and giving it a numbered row as well listed the
+     * same request twice, with the numbered one empty. The numbered rows therefore start at
+     * a step that has something to report, which is what "settled enough to rank" means
+     * here.
      */
     function historyFromStats(statsSnapshot) {
       const steps = statsSteps(statsSnapshot)
@@ -901,6 +922,7 @@ window.__ModuleLoader__.load({
       for (const entry of steps) {
         // A step only has a row once it has started; `step/start` is what supplies this.
         if (numberOrNull(entry.metrics.startTime) === null) continue
+        if (!statsStepHasFigures(entry.metrics)) continue
         rows.push(readingOfStatsStep(entry))
       }
       return rows.slice(-MAX_ROWS).reverse()
@@ -1949,8 +1971,7 @@ window.__ModuleLoader__.load({
        *
        * Derived during render, not in an effect: an effect would leave the first render of
        * a newly published snapshot showing the previous rows (or placeholders), which is
-       * what made the drawer lag the log. Steps still streaming are skipped — the pill
-       * covers the live one and a row needs settled figures.
+       * what made the drawer lag the log.
        */
       const statsRows = useMemo(
         () => (statsSnapshot === undefined ? undefined : historyFromStats(statsSnapshot)),
@@ -1984,11 +2005,26 @@ window.__ModuleLoader__.load({
       }, [statsRows, chatNodes, firstTokens])
 
       /*
+       * The live row at the top of the drawer and the numbered rows below it must not report
+       * the same request: the live row is the request streaming right now, and while it is
+       * still running it has no numbered row. The moment it settles it leaves the live row
+       * and enters the list at `#1` — one request, one place at a time.
+       *
+       * `live.key` is `${turn}:${step}`, the same key the statistics rows use, so this is an
+       * exact identity rather than a timing guess.
+       */
+      const listedRows = useMemo(() => {
+        const base = statsRows ?? fallbackRows ?? []
+        if (live === null) return base
+        return base.filter((row) => row.key !== live.key)
+      }, [statsRows, fallbackRows, live])
+
+      /*
        * Publish the derived rows to the model, which the pill and the drawer both read.
        * This runs after the render that computed them, so the visible tree already carries
        * the right figures.
        */
-      const derivedRows = statsRows ?? fallbackRows ?? []
+      const derivedRows = listedRows
       useEffect(() => {
         replaceRows(geek ? derivedRows : [])
       }, [geek, derivedRows, replaceRows])
