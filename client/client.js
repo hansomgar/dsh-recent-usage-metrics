@@ -1529,7 +1529,7 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    function useLiveReading(useChat, enabled, trajectory, runningStatsStep) {
+    function useLiveReading(useChat, enabled, trajectory, runningStatsStep, sessionTurnOpen) {
       const partial = useChat((snapshot) => snapshot.legacy.partial)
       const nodes = useChat((snapshot) => snapshot.legacy.nodes)
       const turnTimings = useChat((snapshot) => snapshot.legacy.turnTimings)
@@ -1550,15 +1550,27 @@ window.__ModuleLoader__.load({
        * live row reports it. When the live step came only from a lagging source, the running
        * step still appeared in the list and took `#1` while the live row was empty.
        */
+      /*
+       * The sessions whose turn has ended are excluded below: a `partial` block, or a request
+       * the Trajectory domain still lists as running, can outlive the conversation it belongs
+       * to. When the user switches away from a streaming turn and that turn finishes in the
+       * background, those two sources keep reporting it, so the pill and the drawer went on
+       * counting a finished chat. The statistics fold is the authority here: it drops the
+       * running flag on `turn/end`, so once the fold has seen the turn close, nothing else may
+       * claim it is still live.
+       */
+      const turnIsOpen = sessionTurnOpen !== false
       const request = runningRequestOf(trajectory)
       const liveStep =
         runningStatsStep !== null && runningStatsStep !== undefined
           ? { turn: runningStatsStep.turn, step: runningStatsStep.step }
-          : request === undefined
-            ? partial === null || partial === undefined
-              ? null
-              : { turn: partial.turn, step: partial.step }
-            : { turn: request.turn, step: request.step }
+          : !turnIsOpen
+            ? null
+            : request === undefined
+              ? partial === null || partial === undefined
+                ? null
+                : { turn: partial.turn, step: partial.step }
+              : { turn: request.turn, step: request.step }
       const running = enabled && liveStep !== null
       const [now, setNow] = useState(() => Date.now())
       const observation = useRef({ key: null, firstTokenAt: null })
@@ -1954,16 +1966,36 @@ window.__ModuleLoader__.load({
         [statsSource],
       )
       const statsRead = useCallback(
-        () => (statsSource === undefined || typeof statsSource.getSnapshot !== 'function'
-          ? undefined
-          : statsSource.getSnapshot()),
-        [statsSource],
+        () => {
+          if (statsSource === undefined || typeof statsSource.getSnapshot !== 'function') return undefined
+          /*
+           * Tag the snapshot with the session it came from. The tag travels with the value, so
+           * a snapshot that outlives a session switch is recognisable and gets ignored instead
+           * of being rendered against the wrong conversation.
+           */
+          return { sessionId, snapshot: statsSource.getSnapshot() }
+        },
+        [statsSource, sessionId],
       )
       const [statsSnapshot, setStatsSnapshot] = useState(statsRead)
       useEffect(() => {
         setStatsSnapshot(statsRead())
         return statsSubscribe(() => setStatsSnapshot(statsRead()))
       }, [statsRead, statsSubscribe])
+      /*
+       * A snapshot only counts while it belongs to the session being shown.
+       *
+       * `statsSource` follows `props.sessionId`, but `statsSnapshot` is state and survives the
+       * switch: for the render or two before the new source publishes, it still held the
+       * PREVIOUS conversation's data. The drawer and the pill then described the conversation
+       * that had just been left, and a step that was running there kept the live bolt pulsing
+       * on a finished chat. Tagging each snapshot with its session and requiring a match makes
+       * the stale window impossible rather than merely short.
+       */
+      const sessionStats =
+        statsSnapshot !== undefined && statsSnapshot.sessionId === sessionId
+          ? statsSnapshot.snapshot
+          : undefined
       /*
        * The step the statistics fold currently calls running, if any.
        *
@@ -1974,15 +2006,32 @@ window.__ModuleLoader__.load({
        * was empty — the same request reported twice, once with no figures.
        */
       const runningStatsStep = useMemo(() => {
-        if (statsSnapshot === undefined) return null
-        const steps = statsSteps(statsSnapshot)
+        if (sessionStats === undefined) return null
+        const steps = statsSteps(sessionStats)
         for (let index = steps.length - 1; index >= 0; index -= 1) {
           if (steps[index].metrics.running === true) return steps[index]
         }
         return null
-      }, [statsSnapshot])
+      }, [sessionStats])
+      /*
+       * Whether the statistics fold still considers this session's last turn open.
+       *
+       * `buildTurns` computes exactly this: a turn's `running` is true only when it is the last
+       * turn AND its end marker has not arrived, and the marker additionally clears the last
+       * step's running flag. `undefined` means the fold has no opinion yet — an empty session,
+       * or a snapshot that has not arrived — and the other sources are left to speak for
+       * themselves.
+       */
+      const sessionTurnOpen = useMemo(() => {
+        if (sessionStats === undefined) return undefined
+        const turns = sessionStats?.turns
+        if (!Array.isArray(turns) || turns.length === 0) return undefined
+        const last = turns[turns.length - 1]
+        if (last === null || typeof last !== 'object') return undefined
+        return last.running !== false
+      }, [sessionStats])
       const chatNodes = useChat((snapshot) => snapshot.legacy.nodes)
-      const live = useLiveReading(useChat, geek, trajectory, runningStatsStep)
+      const live = useLiveReading(useChat, geek, trajectory, runningStatsStep, sessionTurnOpen)
 
       const triggerRef = useRef(null)
       const drawerRef = useRef(null)
@@ -2022,8 +2071,8 @@ window.__ModuleLoader__.load({
        * what made the drawer lag the log.
        */
       const statsRows = useMemo(
-        () => (statsSnapshot === undefined ? undefined : historyFromStats(statsSnapshot)),
-        [statsSnapshot],
+        () => (sessionStats === undefined ? undefined : historyFromStats(sessionStats)),
+        [sessionStats],
       )
       /*
        * Fallback for a composition without the statistics target: derive rows from the Chat

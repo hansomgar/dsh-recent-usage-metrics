@@ -1606,6 +1606,72 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     }
 
     /*
+     * A finished turn must not keep a live row.
+     *
+     * `legacy.partial` and the Trajectory domain's request list can outlive the turn they
+     * belong to: switch away from a streaming chat, let it finish in the background, and both
+     * sources still describe it. With only those consulted, the pill went on counting and the
+     * drawer kept its live row on a conversation that had already ended. The statistics fold
+     * is what knows the turn closed, so a closed turn vetoes them.
+     */
+    {
+      statsEnabled = true
+      statsSnapshot = { turns: [] }
+      addStatsStep(11, 0, {
+        startTime: 7_000_000,
+        endTime: 7_004_000,
+        ttft: 2_000,
+        model: 4_000,
+        decode: 2_000,
+        tps: 100,
+        output: 300,
+        wall: 4_000,
+        running: false,
+      })
+      // Close the turn the way `buildTurns` does once `turn/end` has been folded.
+      statsSnapshot.turns[statsSnapshot.turns.length - 1].running = false
+      statsSnapshot = { turns: statsSnapshot.turns.slice() }
+      const staleStep = {
+        legacy: {
+          nodes: [],
+          turnTimings: new Map([[11, { startTime: 7_000_000 }]]),
+          partial: { turn: 11, step: 0, blocks: [{ kind: 'text', text: 'still here' }] },
+          runningCalls: [],
+        },
+      }
+      const closedProps = {
+        ...statusInject,
+        useChat: (sel) => sel(staleStep),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        statsSource: () =>
+          statsEnabled ? { getSnapshot: () => statsSnapshot, subscribe: () => () => {} } : undefined,
+        useTrajectory: () => ({
+          eventNodes: [],
+          requests: [{ purpose: 'assistant', turn: 11, step: 0, status: 'running', startedAt: 7_000_000 }],
+        }),
+        t,
+      }
+      const closedTree = await runtime.render(status.component, closedProps)
+      assert(
+        'a closed turn shows no live row, even when the Chat store still says streaming',
+        findAll(closedTree, (el) => String(el.props.className ?? '').includes('dsh-rum-live-row')).length === 0,
+      )
+      assert(
+        'the pill stops counting once the turn has closed',
+        (() => {
+          const trigger = findAll(closedTree, (el) => String(el.props.className ?? '').includes('dsh-rum-trigger'))[0]
+          if (trigger === undefined) return false
+          return !String(trigger.props.className ?? '').includes('dsh-rum-live')
+        })(),
+      )
+      assert(
+        'the turn-closed veto is wired into the live reading',
+        /sessionTurnOpen !== false/.test(fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')),
+      )
+    }
+
+    /*
      * The list keeps a full page while a request streams.
      *
      * The live step is excluded from the numbered rows, so capping at ten *before* that
