@@ -1585,22 +1585,21 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           /^\d{2}:\d{2}:\d{2}$/.test(clockCell),
         )
         assert(
-          'the live row marks itself with a dot, not a word',
+          'the live row marks itself with the pill\u2019s bolt, not a word',
           /*
            * The index column is as narrow as a row number, so a word there pushes the grid
-           * and gets clipped. The dot carries the meaning in that space; the accessible name
-           * still spells it out for assistive technology.
-           *
-           * The dot must be empty: text inside it would render next to the circle, which is
-           * exactly the wide label this replaced.
+           * and gets clipped. The bolt carries the meaning in that space, and using the same
+           * icon the status pill pulses keeps one idea for "streaming" across both places;
+           * the accessible name still spells it out.
            */
           normalize(textOf(cells[0])) === '' &&
             String(cells[0].props.className ?? '').includes('dsh-rum-index') &&
             (() => {
-              const dot = findAll(cells[0], (el) => String(el.props.className ?? '') === 'dsh-rum-live-dot')[0]
-              if (dot === undefined) return false
-              const children = dot.children ?? []
-              return children.length === 0 && (cells[0].props['aria-label'] ?? '').length > 0
+              const bolt = findAll(cells[0], (el) => String(el.props.className ?? '') === 'dsh-rum-live-bolt')[0]
+              if (bolt === undefined) return false
+              // Same glyph as the pill: an svg path, no text node.
+              const children = bolt.children ?? []
+              return children.length === 1 && (cells[0].props['aria-label'] ?? '').length > 0
             })(),
         )
       }

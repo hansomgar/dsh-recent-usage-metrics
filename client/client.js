@@ -447,19 +447,16 @@ window.__ModuleLoader__.load({
   background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
 }
 /*
- * The streaming marker: a pulsing dot in the index column, where a row number would sit.
+ * The streaming marker: the same bolt the status pill pulses, sized for the index column.
  *
- * Its box is sized like the digits beside it and centred by the index cell's flex rule, so
- * it appears level with "1", "2", "3" rather than sitting on the text baseline.
+ * It shares the pill's dsh-rum-pulse keyframes, so the two markers breathe in step instead
+ * of one fading while the other sits still.
  */
-.dsh-rum-live-dot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--dsw-alias-brand-primary);
+.dsh-rum-live-bolt {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  color: var(--dsw-alias-brand-primary);
   animation: dsh-rum-pulse 1.4s ease-in-out infinite;
 }
 .dsh-rum-empty {
@@ -2394,7 +2391,7 @@ window.__ModuleLoader__.load({
                                * cell box (min-width, overflow, ellipsis, nowrap) and
                                * `dsh-rum-index` the index colour and left alignment. The live
                                * cell previously had only `dsh-rum-col`, so it sat at a different
-                               * x and baseline than the numbers below it and the dot did not
+                               * x and baseline than the numbers below it and the marker did not
                                * line up with the `#` column.
                                */
                               className: 'dsh-rum-col dsh-rum-index',
@@ -2402,7 +2399,12 @@ window.__ModuleLoader__.load({
                               'aria-label': t('drawerLive'),
                               title: t('drawerLive'),
                             },
-                            h('span', { className: 'dsh-rum-live-dot', 'aria-hidden': true }),
+                            /*
+                             * The same bolt the status pill uses while a request streams, so the
+                             * marker reads as one idea in both places rather than a dot here and
+                             * a bolt there.
+                             */
+                            h(BoltIcon, { className: 'dsh-rum-live-bolt' }),
                           ),
                           /*
                            * The clock, not the word "streaming".
