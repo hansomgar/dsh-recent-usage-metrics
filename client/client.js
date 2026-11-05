@@ -788,7 +788,9 @@ window.__ModuleLoader__.load({
             : null
       return {
         key: `${node?.turn ?? 0}:${node?.step ?? 0}`,
-        at: end ?? Date.now(),
+        // The clock reads the step's own start, matching the statistics-derived rows: a
+        // row means "when this request was issued", not when it finished.
+        at: start ?? end ?? Date.now(),
         // Kept so a later first-token time can be turned into a TTFT without the node.
         startMs: start,
         ttftMs,
@@ -845,6 +847,12 @@ window.__ModuleLoader__.load({
      * Statistics view renders. `null` means that figure is genuinely unavailable for the
      * step (a cancelled request assembles no message, for one), so it stays null rather
      * than becoming a zero the drawer would print as if it were measured.
+     *
+     * The row's clock is `startTime` (the `step/start` event), matching the Statistics
+     * view: a row means "when this request was issued". Using `endTime` instead would
+     * contradict the total beside it — a row stamped 13:59:15 with a 11.4 s total finished
+     * at 13:59:26, yet read as having happened at 13:59:15 — and would order the list by
+     * completion rather than by issue.
      */
     function readingOfStatsStep(entry) {
       const stats = entry.metrics
@@ -854,7 +862,7 @@ window.__ModuleLoader__.load({
       const speed = numberOrNull(stats.tps)
       return {
         key: `${entry.turn}:${entry.step}`,
-        at: numberOrNull(stats.endTime),
+        at: numberOrNull(stats.startTime) ?? numberOrNull(stats.endTime),
         startMs: numberOrNull(stats.startTime),
         ttftMs,
         totalMs,

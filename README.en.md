@@ -107,6 +107,11 @@ newest first, with no explanatory footer:
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 18:42:07 | 2.3 s | 445 tok/s | 1024 tok | 4.6 s | 223 tok/s |
 
+The `At` column is when the request was **issued** (`step/start`), matching the Statistics
+view. It is not the end time: a row stamped 18:42:07 with a 4.6 s total actually finished
+at 18:42:12, so an end stamp would read as "it finished then" and would also order the list
+by completion rather than by issue.
+
 A new request slides in at the top; the row that falls off the ten-row cap is removed in
 the **same frame** rather than fading out on its own. An exit phase would keep an
 eleventh row laid out for the animation's duration, growing the drawer by a row and

@@ -1225,6 +1225,28 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   assert('the drawer lists ten rows', itemRows.length === 10)
   assert('the first data row is the newest reading', normalize(textOf(itemRows[0])).startsWith('1 0'))
   assert(
+    'the drawer clock is the request start, matching the Statistics view',
+    /*
+     * A row means "when this request was issued". Stamping it with `endTime` would
+     * contradict the total beside it (a 13:59:15 row with an 11.4 s total actually
+     * finished at 13:59:26) and would order the list by completion instead of by issue.
+     */
+    (() => {
+      const rows = modelRows()
+      const source = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
+      // The statistics path prefers startTime, and the fallback path prefers its own start.
+      const statsPrefersStart = /at: numberOrNull\(stats\.startTime\) \?\? numberOrNull\(stats\.endTime\)/.test(source)
+      const fallbackPrefersStart = /at: start \?\? end \?\? Date\.now\(\)/.test(source)
+      // In the harness the step starts at 1000 + index*100, so the newest row's clock must
+      // be that start, not its end.
+      const newest = rows[0]
+      const shownClock = normalize(textOf(findAll(itemRows[0], byClass('dsh-rum-clock'))[0] ?? itemRows[0]))
+      const expected = new Date(newest.at).toTimeString().slice(0, 8)
+      const viaEnd = new Date(newest.at + newest.totalMs).toTimeString().slice(0, 8)
+      return statsPrefersStart && fallbackPrefersStart && newest.at === newest.startMs && shownClock === expected && shownClock !== viaEnd
+    })(),
+  )
+  assert(
     'opening the drawer establishes a baseline instead of animating every row',
     // The first pass has no previous key set, so nothing may be marked as an arrival.
     itemRows.every((el) => el.props['data-phase'] === 'idle'),
