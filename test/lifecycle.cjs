@@ -1597,7 +1597,49 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     {
       assert(
         'a landed reply switches the live reading to measured values',
-        /const replyLanded = settled !== null && numberOrNull\(settled\.messageTime\) !== null/.test(source),
+        /*
+         * The trigger must be a field the published step ACTUALLY has. `stepMetrics` exposes
+         * derived figures only — there is no `messageTime` on it — so keying off that field
+         * silently never fired and the pill counted through the whole tool phase.
+         */
+        /const replyLanded =\s*\n?\s*settled !== null && numberOrNull\(settled\.model\) !== null && numberOrNull\(settled\.output\) !== null/.test(
+          source,
+        ),
+      )
+      assert(
+        'the trigger does not depend on a field the step object lacks',
+        !/settled\.messageTime/.test(source),
+      )
+      assert(
+        'the step object the drawer reads really carries model and output',
+        /*
+         * Guards the assumption above with the fixture the harness already feeds the drawer:
+         * every statistics step it builds has to expose `model` and `output`, which is what the
+         * trigger keys off. (The shipped bundle lives inside an asar, so it cannot be read from
+         * a plain Node process here; the harness fixture is the available evidence.)
+         */
+        (() => {
+          statsEnabled = true
+          statsSnapshot = { turns: [] }
+          addStatsStep(77, 0, {
+            startTime: 5_000_000,
+            endTime: 5_007_000,
+            ttft: 2_000,
+            model: 7_000,
+            decode: 5_000,
+            tps: 120,
+            output: 600,
+            wall: 7_000,
+            running: false,
+          })
+          const step = statsSnapshot.turns[0].steps[0]
+          return (
+            typeof step.model === 'number' &&
+            typeof step.output === 'number' &&
+            typeof step.wall === 'number' &&
+            step.messageTime === undefined
+          )
+        })(),
       )
       assert(
         'measured tokens replace the estimate once the reply has landed',

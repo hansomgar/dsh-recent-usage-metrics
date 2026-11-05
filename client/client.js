@@ -1702,7 +1702,20 @@ window.__ModuleLoader__.load({
       const settled = runningStatsStep !== null && runningStatsStep !== undefined
         ? runningStatsStep.metrics
         : null
-      const replyLanded = settled !== null && numberOrNull(settled.messageTime) !== null
+      /*
+       * Has the model finished writing this reply?
+       *
+       * The published step object has NO `messageTime` field — `stepMetrics` keeps that in the
+       * fold's private state and exposes only derived figures. Checking `messageTime` therefore
+       * always read `undefined`, the measured branch never ran, and the pill went on counting
+       * through the tool phase with "~0 tok" beside it.
+       *
+       * `model` is the field that answers this: it is `messageTime - startTime`, so it is null
+       * until the message lands and final afterwards. `decode` and `output` have the same
+       * property for the token side.
+       */
+      const replyLanded =
+        settled !== null && numberOrNull(settled.model) !== null && numberOrNull(settled.output) !== null
       if (replyLanded) {
         const measuredTtft = numberOrNull(settled.ttft)
         const measuredTokens = numberOrNull(settled.output)
