@@ -398,6 +398,9 @@ const ctx = {
   },
 }
 
+// Most specs exercise the statistics path; the fallback specs opt in explicitly.
+sandbox.__dshRumFallbackSwitch = false
+
 exported.apply(ctx)
 
 /*
@@ -2659,6 +2662,9 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
    * rather than assumed.
    */
   {
+    // Drive the fallback explicitly: the suite runs with the switch off.
+    sandbox.__dshRumFallbackSwitch = true
+
     console.log('\n--- fallback path (no statistics target) ---')
 
     // Three settled steps, deliberately without provider usage so the estimate is exercised.

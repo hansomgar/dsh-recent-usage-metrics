@@ -50,7 +50,16 @@ window.__ModuleLoader__.load({
     const STYLE_ID = 'dsh-recent-usage-metrics-style'
     /** Durable Geek flag. The shipped preference keeps its own two values. */
     const MODE_KEY = 'dsh.recentUsageMetrics.mode.v1'
-    /* TEMPORARY: forces the fallback path when set to true. See the use in GeekStatus. */
+    /*
+     * TEMPORARY: when true, the plugin ignores the statistics target and derives its rows from
+     * the Chat snapshot — the fallback path — so that path can be inspected in the running app.
+     * Set this back to false to read the statistics target again, and delete both constants
+     * before release.
+     *
+     * The harness sets `__dshRumFallbackSwitch` to override it per case, because most specs
+     * exercise the statistics path and would otherwise be forced onto the fallback.
+     */
+    const FORCE_FALLBACK_DEFAULT = true
     const FORCE_FALLBACK_KEY = 'dsh.recentUsageMetrics.forceFallback'
     /** Drawer capacity: the newest settled requests it lists. */
     const MAX_ROWS = 10
@@ -2161,18 +2170,24 @@ window.__ModuleLoader__.load({
        * TEMPORARY: force the fallback path, for observing it end to end.
        *
        * The primary path reads the shipped Statistics view's target, so the fallback only runs
-       * in a composition that lacks that view — which the normal profile never is. Setting this
-       * flag makes `statsSource` resolve to `undefined`, which is exactly the condition the
-       * fallback was written for.
+       * in a composition that lacks that view — which the normal profile never is. This switch
+       * makes `statsSource` resolve to `undefined`, which is exactly the condition the fallback
+       * was written for.
        *
-       * Toggle it from the browser console, then reload the page:
-       *
-       *   localStorage.setItem('dsh.recentUsageMetrics.forceFallback', 'true')   // enable
-       *   localStorage.removeItem('dsh.recentUsageMetrics.forceFallback')       // disable
-       *
-       * DELETE THIS BLOCK (and the `forced` reference below) before release.
+       * CURRENTLY ON BY DEFAULT (see FORCE_FALLBACK_DEFAULT) so the fallback can be inspected
+       * in the running app without touching the console. Revert that constant to false to go
+       * back to the statistics target, and delete this whole block before release.
        */
-      const forced = readJson(FORCE_FALLBACK_KEY) === true
+      /*
+       * A harness may pin the switch per case; otherwise the default above applies, or the
+       * stored flag if one is set.
+       */
+      const hostGlobal = typeof globalThis !== 'undefined' ? globalThis : undefined
+      const override = hostGlobal === undefined ? undefined : hostGlobal.__dshRumFallbackSwitch
+      const forced =
+        typeof override === 'boolean'
+          ? override
+          : FORCE_FALLBACK_DEFAULT || readJson(FORCE_FALLBACK_KEY) === true
       const statsSource = forced
         ? undefined
         : typeof props.statsSource === 'function'
