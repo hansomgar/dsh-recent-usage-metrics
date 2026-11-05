@@ -1,5 +1,10 @@
 # 更新记录
 
+## 0.2.1
+
+- 发布流程改为 GitHub Actions 的 OIDC trusted publishing：推 `v*` 标签即自动发布，
+  不再依赖任何 npm token。workflow 会先校验标签与 `package.json` 版本一致。
+
 ## 0.2.0
 
 这一版把抽屉的数据源换成了 DSH 自带「统计」页所用的同一份数据，并解决了一批会导致
