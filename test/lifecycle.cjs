@@ -1585,10 +1585,93 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           /^\d{2}:\d{2}:\d{2}$/.test(clockCell),
         )
         assert(
-          'the live row marks itself in the index column instead',
-          normalize(textOf(cells[0])).length > 0 && !/^\d+$/.test(normalize(textOf(cells[0]))),
+          'the live row marks itself with a dot, not a word',
+          /*
+           * The index column is as narrow as a row number, so a word there pushes the grid
+           * and gets clipped. The dot carries the meaning in that space; the accessible name
+           * still spells it out for assistive technology.
+           *
+           * The dot must be empty: text inside it would render next to the circle, which is
+           * exactly the wide label this replaced.
+           */
+          normalize(textOf(cells[0])) === '' &&
+            (() => {
+              const dot = findAll(cells[0], (el) => String(el.props.className ?? '') === 'dsh-rum-live-dot')[0]
+              if (dot === undefined) return false
+              const children = dot.children ?? []
+              return children.length === 0 && (cells[0].props['aria-label'] ?? '').length > 0
+            })(),
         )
       }
+    }
+
+    /*
+     * The list keeps a full page while a request streams.
+     *
+     * The live step is excluded from the numbered rows, so capping at ten *before* that
+     * exclusion left nine rows on screen for the whole time a request ran. The cap has to
+     * come after it: the live row replaces nothing, and a newly settled request pushes the
+     * oldest out.
+     */
+    {
+      const hasClass = (name) => (el) => String(el.props.className ?? '').includes(name)
+      statsSnapshot = { turns: [] }
+      for (let index = 0; index < 15; index += 1) {
+        addStatsStep(9, index, {
+          startTime: 5_000_000 + index * 10_000,
+          endTime: 5_000_000 + index * 10_000 + 4_000,
+          ttft: 2_000,
+          model: 4_000,
+          decode: 2_000,
+          tps: 100,
+          output: 200,
+          wall: 4_000,
+          running: false,
+        })
+      }
+      // The newest step is still running and therefore has no numbered row.
+      addStatsStep(9, 15, {
+        startTime: 5_000_000 + 15 * 10_000,
+        endTime: null,
+        ttft: 2_500,
+        model: null,
+        decode: null,
+        tps: 90,
+        output: 120,
+        wall: null,
+        running: true,
+      })
+      statusTree = await runtime.render(status.component, statusProps)
+      const pill3 = findAll(statusTree, (el) => String(el.props.className ?? '').includes('dsh-rum-trigger'))[0]
+      pill3.props.onClick({ stopPropagation() {}, preventDefault() {} })
+      const tree3 = await runtime.render(status.component, statusProps)
+      const numbered = findAll(
+        tree3,
+        (el) => String(el.props.className ?? '').includes('dsh-rum-item'),
+      )
+      assert(
+        'a full page of ten rows remains while a request streams',
+        numbered.length === 10,
+      )
+      assert(
+        'the cap is applied after the live step is excluded from the list',
+        /*
+         * Capping before the exclusion is what produced nine rows: the newest ten were taken
+         * first, then the running one was dropped from that set. The list therefore has to be
+         * filtered first and capped second.
+         */
+        (() => {
+          const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
+          const filtered = /const visible = live === null \? base : base\.filter\(\(row\) => row\.key !== live\.key\)/.test(clientSource)
+          const capped = /return visible\.slice\(0, MAX_ROWS\)/.test(clientSource)
+          const notCappedEarlier = !/return rows\.slice\(-MAX_ROWS\)\.reverse\(\)/.test(clientSource)
+          return filtered && capped && notCappedEarlier
+        })(),
+      )
+      assert(
+        'the numbered rows stay at ten regardless of how many steps exist',
+        modelRows().length === 10,
+      )
     }
   }
 

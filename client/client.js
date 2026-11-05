@@ -434,19 +434,14 @@ window.__ModuleLoader__.load({
 .dsh-rum-live-row {
   background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
 }
-.dsh-rum-live-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--dsw-alias-brand-primary);
-  font-size: 11px;
-}
-.dsh-rum-live-tag::before {
-  content: "";
-  width: 5px;
-  height: 5px;
+/* The streaming marker: a pulsing dot in the index column, where a row number would sit. */
+.dsh-rum-live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: currentColor;
+  background: var(--dsw-alias-brand-primary);
+  vertical-align: middle;
   animation: dsh-rum-pulse 1.4s ease-in-out infinite;
 }
 .dsh-rum-empty {
@@ -902,7 +897,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The newest readings for a session, newest first, capped at the drawer's limit.
+     * The newest readings for a session, newest first.
      *
      * A step is included as soon as it has produced a figure, not only once `step/end`
      * arrives. Waiting for `step/end` made the drawer lag the Statistics view by however
@@ -912,9 +907,11 @@ window.__ModuleLoader__.load({
      *
      * Conversely a step that has produced nothing yet is left out: the live row at the top
      * of the drawer reports that request, and giving it a numbered row as well listed the
-     * same request twice, with the numbered one empty. The numbered rows therefore start at
-     * a step that has something to report, which is what "settled enough to rank" means
-     * here.
+     * same request twice, with the numbered one empty.
+     *
+     * The caller decides how many to keep, because the live step is excluded from the list
+     * *after* selection: capping here at ten and then dropping the live step left the drawer
+     * showing nine rows for as long as a request was streaming.
      */
     function historyFromStats(statsSnapshot) {
       const steps = statsSteps(statsSnapshot)
@@ -925,7 +922,7 @@ window.__ModuleLoader__.load({
         if (!statsStepHasFigures(entry.metrics)) continue
         rows.push(readingOfStatsStep(entry))
       }
-      return rows.slice(-MAX_ROWS).reverse()
+      return rows.reverse()
     }
 
     function readJson(key) {
@@ -2037,7 +2034,7 @@ window.__ModuleLoader__.load({
           if (numberOrNull(timing.firstTokenTime) !== null) return readingOf(node)
           return readingOf({ ...node, timing: { ...timing, firstTokenTime: fromTrajectory } })
         }
-        return assistants.slice(-MAX_ROWS).reverse().map(dated)
+        return assistants.reverse().map(dated)
       }, [statsRows, chatNodes, firstTokens])
 
       /*
@@ -2048,11 +2045,16 @@ window.__ModuleLoader__.load({
        *
        * `live.key` is `${turn}:${step}`, the same key the statistics rows use, so this is an
        * exact identity rather than a timing guess.
+       *
+       * The cap is applied *after* the exclusion. Taking the newest ten and then dropping the
+       * live one left nine rows on screen for the whole time a request was streaming, which
+       * broke the "always ten" rule: the list must keep a full page and let the newest
+       * settled request push the oldest out, not shrink while something runs.
        */
       const listedRows = useMemo(() => {
         const base = statsRows ?? fallbackRows ?? []
-        if (live === null) return base
-        return base.filter((row) => row.key !== live.key)
+        const visible = live === null ? base : base.filter((row) => row.key !== live.key)
+        return visible.slice(0, MAX_ROWS)
       }, [statsRows, fallbackRows, live])
 
       /*
@@ -2357,10 +2359,24 @@ window.__ModuleLoader__.load({
                       ? h(
                           'div',
                           { className: 'dsh-rum-row dsh-rum-live-row', role: 'row' },
+                          /*
+                           * A pulsing dot, no word.
+                           *
+                           * The row is already distinguished by its tint and its position, and
+                           * the index column is narrow: printing "streaming" there pushed the
+                           * whole grid right and clipped the label. The dot carries the same
+                           * meaning in the space a row number would take, and the accessible
+                           * name still says what it is.
+                           */
                           h(
                             'span',
-                            { className: 'dsh-rum-col', role: 'cell' },
-                            h('span', { className: 'dsh-rum-live-tag' }, t('drawerLive')),
+                            {
+                              className: 'dsh-rum-col',
+                              role: 'cell',
+                              'aria-label': t('drawerLive'),
+                              title: t('drawerLive'),
+                            },
+                            h('span', { className: 'dsh-rum-live-dot', 'aria-hidden': true }),
                           ),
                           /*
                            * The clock, not the word "streaming".
