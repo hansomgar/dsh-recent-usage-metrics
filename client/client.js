@@ -1286,12 +1286,16 @@ window.__ModuleLoader__.load({
         'svg',
         { viewBox: '0 0 16 16', className: props.className, 'aria-hidden': true, fill: 'currentColor' },
         /*
-         * A capital T on a 16-unit grid: a 10-wide bar with slightly softened corners, and a
-         * 3.6-wide stem. The proportions are the ones that stayed legible at 11px in the
-         * candidate sheet.
+         * A capital T sized to sit like the bolt beside it.
+         *
+         * The bolt's glyph occupies roughly 6.5 x 14 of the 16-unit box — narrow and tall. A
+         * full-width T read as heavier at the same 14px svg size and made the pill look like it
+         * had grown. The path is therefore inset: a 8.4-wide bar and a 3.0-wide stem, centred,
+         * spanning 11.6 vertically. The svg's own box is unchanged, so nothing shifts when the
+         * two glyphs swap.
          */
         h('path', {
-          d: 'M3 2.6h10a.9.9 0 0 1 0 1.8H9.8v9a.9.9 0 0 1-1.8 0v-9H3.9a.9.9 0 0 1-.9-.9z',
+          d: 'M4.3 3.2h7.4a.8.8 0 0 1 0 1.6H8.5v9.9a.8.8 0 0 1-1.6 0V4.8H4.3a.8.8 0 0 1-.8-.8z',
         }),
       )
     }

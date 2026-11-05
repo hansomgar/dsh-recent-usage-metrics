@@ -95,6 +95,47 @@ Two further details make the edges actually coincide:
 Click the pill to open the drawer; click it again, or press Escape, or click outside, to
 close it. There is no hover-open and no tooltip.
 
+## Three states
+
+This plugin has two kinds of busy and one kind of idle, and all three look different:
+
+| State | Decided by | Pill icon | Drawer header | Live row |
+| --- | --- | --- | --- | --- |
+| **Model writing** | `model` is `null` | ⚡ pulsing bolt | `Streaming` | yes (11 rows) |
+| **Tools running** | `model` set, `endTime` `null` | **pulsing T** | **`Calling tools`** | yes (11 rows) |
+| **Idle** | `endTime` set, or no running step | still | `last N` | no (10 rows) |
+
+### Why the tool phase is its own state
+
+This plugin measures **model output**, and `step/end` only arrives after the step's tool calls
+have all returned. Keying off `running` (which `step/end` clears) therefore kept the plugin in
+"streaming" for the entire tool phase after the reply had already finished: the bolt kept
+pulsing and the live row kept occupying an eleventh row.
+
+The field that separates the first two is `model`, which is `messageTime − startTime`:
+
+- the model is still writing → `null`
+- `assistant/message` has landed → a fixed value, **even while tools run**
+
+`endTime` then separates the tool phase from idle. Both fields come from the Host's
+`sessionStats` fold — the same data the Statistics page renders.
+
+### The live row stays through the tool phase
+
+The request is genuinely still in flight, so it keeps its row; only the marker changes from the
+bolt to a T, and the drawer header switches from "Streaming" to "Calling tools". That makes all
+three states distinguishable at a glance.
+
+Both glyphs share **the same 14×14 svg box** (`.dsh-rum-trigger svg`) and the same `pulse`
+animation. Switching changes the shape and colour inside the box, never the box, so the status
+row does not shift. The T is drawn narrower on purpose so it does not read heavier than the bolt.
+
+### Fallback
+
+A composition without the statistics fold has no `model` to read. There, `partial` and a
+Trajectory request can only mean the model is writing, so the state is always "model writing" —
+it never degrades to idle just because the fold is missing.
+
 **Drawer** — slides up from the status row, right-aligned to that pill, `position: fixed`
 on `document.body` so no scroll container can clip it. Its material is the shipped
 statistics dialog's own, copied token for token: the `--dsw-specific-menu` fill
