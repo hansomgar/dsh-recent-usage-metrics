@@ -1937,10 +1937,10 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         modelRows().length === 1 && modelRows()[0].key === '13:0',
       )
       assert(
-        'the interrupted row carries the flag and no invented figures',
+        'the interrupted row invents no figures beyond the span it ran',
         modelRows()[0].interrupted === true &&
-          modelRows()[0].ttftMs === null &&
-          modelRows()[0].tokens === null,
+          modelRows()[0].tokens === null &&
+          modelRows()[0].speed === null,
       )
       assert(
         'the interrupted row reports the wall-clock span from the log, not a dash',
@@ -1953,8 +1953,13 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         modelRows()[0].totalMs === 15_000,
       )
       assert(
-        'the first-token column keeps a real measurement when one exists',
-        modelRows()[0].ttftMs === null,
+        'a request stopped before any token reports the span it waited as its first-token time',
+        /*
+         * The live reading was counting up while the request waited; that number is what the
+         * user saw, and `wall` is the same span recorded in the log. Printing a dash instead
+         * would deny a wait that demonstrably happened.
+         */
+        modelRows()[0].ttftMs === 15_000 && modelRows()[0].totalMs === 15_000,
       )
       // Open the drawer so its rows are rendered, then read the interrupted one back.
       const trigger = findAll(cancelledTree, (el) =>
@@ -1995,8 +2000,53 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           )
         })(),
       )
-      sessionRunningStub = true
+
+    /*
+     * A request stopped AFTER its first token landed.
+     *
+     * `ttft` is written the moment the first token arrives and never changes, so the row must
+     * keep that measured value rather than replacing it with the span — and it must be smaller
+     * than the total, which is the ordering a reader uses to tell "it started answering and was
+     * cut off" from "it never answered at all".
+     */
+    {
+      statsSnapshot = { turns: [] }
+      addStatsStep(14, 0, {
+        startTime: 9_100_000,
+        endTime: 9_112_000,
+        ttft: 2_400,
+        model: null,
+        decode: null,
+        tps: null,
+        output: 180,
+        wall: 12_000,
+        running: false,
+        aborted: true,
+      })
+      const lateProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: false }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        t,
+      }
+      await runtime.render(status.component, lateProps)
+      const lateRow = modelRows().find((entry) => entry.key === '14:0')
+      assert(
+        'a request stopped after its first token keeps the measured first-token time',
+        lateRow !== undefined && lateRow.ttftMs === 2_400 && lateRow.totalMs === 12_000,
+      )
+      assert(
+        'that first-token time is smaller than the total',
+        lateRow !== undefined && lateRow.ttftMs < lateRow.totalMs,
+      )
     }
+
+    sessionRunningStub = true
+  }
 
     /*
      * A healthy step in its tool phase must keep the live row.

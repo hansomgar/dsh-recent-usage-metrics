@@ -419,9 +419,15 @@ A request that was stopped never produced an `assistant/message`, so `model`, `d
 long the request actually ran before it was stopped. It is a log fact, so it survives a reload
 unchanged, which is exactly what that column is for here.
 
-The word **"interrupted" sits in the speed column**, not the first-token column: a request that
-already streamed keeps its measured first-token time and still shows its total; the only figure
-missing is the generation rate, so that is the column that says why. Interrupted rows are
+**The first-token column falls back to `wall` too**, in two shapes: if the upstream never returned a
+token, the first-token figure is the wait itself and equals the total; if a token had arrived,
+`ttft` is already fixed and the row keeps that measurement, so the first-token figure is smaller
+than the total — which is how a reader tells "it started answering and was cut off" from "it never
+got to answer".
+
+The word **"interrupted" sits in the speed column**, not the first-token column: both the
+first-token figure and the total are real readings, and the only missing figure is the generation
+rate, so that is the column that says why. Interrupted rows are
 excluded from the footer average — their total is wall-clock time, and folding it into the mean
 would pull it toward a number describing neither case — but the caption still counts all ten.
 

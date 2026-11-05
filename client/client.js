@@ -879,13 +879,27 @@ window.__ModuleLoader__.load({
      */
     function readingOfStatsStep(entry) {
       const stats = entry.metrics
-      const ttftMs = numberOrNull(stats.ttft)
       /*
        * A step the fold marks aborted ended without a settled reply: the user stopped it, or the
        * upstream failed mid-request. Either way there is no `messageTime`, so `model`, `decode`
        * and `tps` are all null and the row would be entirely blank.
        */
       const interrupted = stats.aborted === true || stats.interrupted === true
+      const wallMs = numberOrNull(stats.wall)
+      /*
+       * The first-token column of an interrupted request.
+       *
+       * The live reading counts up from the moment the request was issued, so a stopped request
+       * did have a first-token figure on screen — it simply never landed in the log as `ttft`,
+       * because the fold only writes that once a first token actually arrived. Two cases:
+       *
+       * - No first token ever came: the counter was still running when the request stopped, so
+       *   the figure it showed was the elapsed span. `wall` is that span, and reporting it keeps
+       *   the column honest instead of printing a dash for a request that demonstrably waited.
+       * - A first token did arrive: `ttft` is set and frozen, so the row keeps the real value,
+       *   which is smaller than the total — exactly the ordering the user expects to see.
+       */
+      const ttftMs = numberOrNull(stats.ttft) ?? (interrupted ? wallMs : null)
       /*
        * The drawer's "total" is the Statistics view's MODEL time, not its wall time.
        *
@@ -900,7 +914,7 @@ window.__ModuleLoader__.load({
        * It is a log fact — `endTime - startTime` — so it survives a reload unchanged, unlike
        * the live reading, which is recomputed and lost.
        */
-      const totalMs = numberOrNull(stats.model) ?? (interrupted ? numberOrNull(stats.wall) : null)
+      const totalMs = numberOrNull(stats.model) ?? (interrupted ? wallMs : null)
       const tokens = numberOrNull(stats.output)
       const speed = numberOrNull(stats.tps)
       return {
