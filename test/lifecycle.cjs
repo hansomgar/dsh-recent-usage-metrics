@@ -406,14 +406,28 @@ assert(
    * STYLE_TEXT is a template literal, so a backtick inside a CSS comment terminates it
    * and turns the rest of the stylesheet into JavaScript — a syntax error that only
    * shows up at load time. The stylesheet ships with zero backticks by contract.
+   *
+   * The terminator is the first unescaped backtick after the opening one. Searching for a
+   * backtick followed by a newline would break on CRLF checkouts (the file is stored with
+   * "\r\n" here), which is why this scans by character instead of by a two-character
+   * sequence.
    */
   (() => {
-    const start = source.indexOf('const STYLE_TEXT = `')
+    const opening = 'const STYLE_TEXT = `'
+    const start = source.indexOf(opening)
     if (start < 0) return false
-    const bodyStart = start + 'const STYLE_TEXT = `'.length
-    const bodyEnd = source.indexOf('`\n', bodyStart)
-    if (bodyEnd < 0) return false
-    return !source.slice(bodyStart, bodyEnd).includes('`')
+    const bodyStart = start + opening.length
+    let end = -1
+    for (let index = bodyStart; index < source.length; index += 1) {
+      if (source[index] === '`' && source[index - 1] !== '\\') {
+        end = index
+        break
+      }
+    }
+    if (end < 0) return false
+    const css = source.slice(bodyStart, end)
+    // A stylesheet is large; an early terminator would mean the literal closed too soon.
+    return !css.includes('`') && css.length > 1000
   })(),
 )
 
@@ -1796,9 +1810,89 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         'a later publication updates the drawer\u2019s rows',
         modelRows().length === 1 && modelRows()[0].tokens === 100,
       )
+
+      /*
+       * A step that is still running must already have its row.
+       *
+       * The fold reports `running: !ended`, and `ended` only flips on `step/end` — which
+       * lands after the model turn AND its tool calls. Skipping running steps therefore hid
+       * the newest few rows of a busy turn while the Statistics page already listed them,
+       * which is exactly the gap reported: the drawer stopped three steps short.
+       */
+      {
+        statsSnapshot = { turns: [] }
+        addStatsStep(2, 0, {
+          startTime: 2_000_000,
+          endTime: null,
+          ttft: null,
+          model: null,
+          decode: null,
+          tps: null,
+          output: null,
+          wall: null,
+          running: true,
+        })
+        statusTree = await runtime.render(status.component, statusProps)
+        assert(
+          'a running step is listed instead of being skipped',
+          modelRows().length === 1 && modelRows()[0].key === '2:0',
+        )
+        assert(
+          'a running step shows placeholders, not a false zero',
+          /*
+           * `0 tok` would be a claim: zero is a real measurement. The row must carry `null`
+           * so the drawer prints its placeholder, and it must not be flagged as estimated.
+           */
+          modelRows()[0].tokens === null && modelRows()[0].estimated === false,
+        )
+      }
+
+      /*
+       * A row that settles in place must refresh.
+       *
+       * The step keeps its key and its first-token time between running and settled, so a
+       * comparison limited to those two fields would drop the update and leave the drawer on
+       * its placeholders.
+       */
+      {
+        const before = modelRows()[0]
+        assert('the running row starts without figures', before.tokens === null && before.totalMs === null)
+        statsSnapshot = { turns: [] }
+        addStatsStep(2, 0, {
+          startTime: 2_000_000,
+          endTime: 2_005_000,
+          ttft: 1200,
+          model: 5000,
+          decode: 3800,
+          tps: 65.8,
+          output: 250,
+          wall: 5000,
+          running: false,
+        })
+        statusTree = await runtime.render(status.component, statusProps)
+        const after = modelRows()[0]
+        assert(
+          'settling in place refreshes the row it replaces',
+          after.tokens === 250 && Math.round(after.totalMs) === 5000 && Math.round(after.ttftMs) === 1200,
+        )
+        assert(
+          'the comparison that decides "unchanged" covers every rendered figure',
+          /row\.tokens === previous\.tokens/.test(source) &&
+            /row\.totalMs === previous\.totalMs/.test(source) &&
+            /row\.amortized === previous\.amortized/.test(source),
+        )
+      }
+
       assert(
         'the stats source forwards the component\u2019s listener',
-        /subscribe: \(listener\) => target\.subscribe\(listener\)/.test(source),
+        /*
+         * The source must hand the component's own listener to the target — an internal
+         * no-op subscription would activate the target but leave the drawer frozen on its
+         * first snapshot. It also has to remember the unsubscribe so eviction can drop it.
+         */
+        /subscribe: \(listener\) => \{/.test(source) &&
+          /const unsubscribe = target\.subscribe\(listener\)/.test(source) &&
+          /subscriptions\.set\(listener, \{ unsubscribe, dispose \}\)/.test(source),
       )
     }
 

@@ -866,8 +866,13 @@ window.__ModuleLoader__.load({
         startMs: numberOrNull(stats.startTime),
         ttftMs,
         totalMs,
-        tokens: tokens ?? 0,
-        estimated: tokens === null,
+        /*
+         * `0` is a real measurement, so an unreported count must stay `null` and print the
+         * drawer's placeholder. Coercing it to zero would render "0 tok" for a step that is
+         * still running, and `estimated` would then falsely claim a character estimate.
+         */
+        tokens,
+        estimated: false,
         speed,
         amortized:
           tokens !== null && tokens > 0 && totalMs !== null && totalMs > 0
@@ -877,16 +882,25 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The newest settled readings for a session, newest first, capped at the drawer's
-     * limit. A step still running is skipped: the pill already reports the live one, and a
-     * drawer row needs settled figures.
+     * The newest readings for a session, newest first, capped at the drawer's limit.
+     *
+     * A step is included as soon as the statistics fold knows about it, including one that
+     * is still running. Filtering running steps out made the drawer lag the Statistics view
+     * by however many steps were mid-flight: the fold marks a step `running` from
+     * `step/start` until its `step/end`, which spans the whole model turn *and* the tool
+     * calls after it, so the newest three steps of a busy turn were missing from the
+     * drawer while the Statistics page already listed them.
+     *
+     * A step with no figures yet still yields a row: the readings come out as null and the
+     * drawer prints its placeholders, which is the same thing the Statistics view shows for
+     * a step that has not produced anything yet.
      */
     function historyFromStats(statsSnapshot) {
       const steps = statsSteps(statsSnapshot)
       const rows = []
       for (const entry of steps) {
-        if (entry.metrics.running === true) continue
-        if (numberOrNull(entry.metrics.endTime) === null) continue
+        // A step only has a row once it has started; `step/start` is what supplies this.
+        if (numberOrNull(entry.metrics.startTime) === null) continue
         rows.push(readingOfStatsStep(entry))
       }
       return rows.slice(-MAX_ROWS).reverse()
@@ -973,9 +987,28 @@ window.__ModuleLoader__.load({
          */
         replace(next) {
           const value = Array.isArray(next) ? next.slice(0, MAX_ROWS) : []
+          /*
+           * Every rendered figure takes part in the comparison.
+           *
+           * Comparing only `key` and `ttftMs` skipped the update that matters most: a row
+           * whose step moves from running to settled keeps its key, and its first-token time
+           * was already known, so the new token count, total and speeds were dropped and the
+           * drawer stayed on its placeholders until something else changed.
+           */
           const same =
             value.length === rows.length &&
-            value.every((row, index) => row.key === rows[index].key && row.ttftMs === rows[index].ttftMs)
+            value.every((row, index) => {
+              const previous = rows[index]
+              return (
+                row.key === previous.key &&
+                row.at === previous.at &&
+                row.ttftMs === previous.ttftMs &&
+                row.totalMs === previous.totalMs &&
+                row.tokens === previous.tokens &&
+                row.speed === previous.speed &&
+                row.amortized === previous.amortized
+              )
+            })
           if (same) return
           rows = value
           emit()
@@ -2442,27 +2475,85 @@ window.__ModuleLoader__.load({
        * once the entry renders.
        */
       const statsSources = new Map()
+      /*
+       * The Statistics target for one session, created on first use.
+       *
+       * `uiConversation.binding(id)` throws once that session is released, so a cached source
+       * can become stale. The cache is therefore bounded and evicts oldest-first, releasing
+       * the evicted target's subscription: without that, a long session that visits many
+       * conversations would keep one live subscription per conversation visited, and each of
+       * those keeps the conversation's fold active.
+       */
+      const STATS_SOURCE_LIMIT = 4
       const statsSourceFor = (sessionId) => {
         if (sessionId === null || sessionId === undefined) return undefined
-        if (statsSources.has(sessionId)) return statsSources.get(sessionId)
+        if (statsSources.has(sessionId)) {
+          // Refresh recency so the active conversation is the last one evicted.
+          const existing = statsSources.get(sessionId)
+          statsSources.delete(sessionId)
+          statsSources.set(sessionId, existing)
+          return existing
+        }
         const uiConversation = ctx.get('uiConversation')
         if (uiConversation === undefined || uiConversation === null) return undefined
         let source
         try {
           const target = uiConversation.binding(sessionId).target(STATS_TARGET)
           if (target === undefined || target === null) return undefined
+          /*
+           * Track the listener/unsubscribe pairs this source handed to the target, so
+           * eviction can drop them. The target's `subscribe` returns its own unsubscribe,
+           * but nothing else would call it once the source leaves the cache.
+           */
+          const subscriptions = new Map()
           source = {
             getSnapshot: () => target.getSnapshot(),
-            subscribe: (listener) => target.subscribe(listener),
+            subscribe: (listener) => {
+              const existing = subscriptions.get(listener)
+              if (existing !== undefined) return existing.dispose
+              const unsubscribe = target.subscribe(listener)
+              const dispose = () => {
+                if (subscriptions.get(listener)?.unsubscribe !== unsubscribe) return
+                subscriptions.delete(listener)
+                try {
+                  unsubscribe()
+                } catch {}
+              }
+              subscriptions.set(listener, { unsubscribe, dispose })
+              return dispose
+            },
+            release: () => {
+              for (const [listener, entry] of [...subscriptions]) {
+                subscriptions.delete(listener)
+                try {
+                  entry.unsubscribe()
+                } catch {}
+              }
+            },
           }
         } catch {
+          // The session was released (or is inactive) — no statistics for it.
           return undefined
         }
         statsSources.set(sessionId, source)
+        while (statsSources.size > STATS_SOURCE_LIMIT) {
+          const oldest = statsSources.keys().next()
+          if (oldest.done === true) break
+          const evicted = statsSources.get(oldest.value)
+          statsSources.delete(oldest.value)
+          try {
+            evicted?.release?.()
+          } catch {}
+        }
         return source
       }
       ctx.effect(
         () => () => {
+          for (const source of statsSources.values()) {
+            try {
+              source.release?.()
+            } catch {}
+          }
           statsSources.clear()
         },
         'dsh-recent-usage-metrics: stats targets',
