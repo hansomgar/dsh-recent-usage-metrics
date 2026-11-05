@@ -728,6 +728,8 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
    * metrics the shipped `stepMetrics` produces.
    */
   let statsEnabled = true
+  /* Mirrors the framework session store: true while a turn is in flight. */
+  let sessionRunningStub = true
   let statsSnapshot = { turns: [] }
   const statsListeners = new Set()
   const statsSteps = []
@@ -742,6 +744,8 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   }
   const statusProps = {
     ...statusInject,
+    /* The framework's session snapshot: `running` is what stops the pill on any turn end. */
+    useSession: (sel) => sel({ running: sessionRunningStub }),
     useChat: (sel) => sel(snapshot),
     useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
     useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
@@ -1667,7 +1671,97 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       )
       assert(
         'the turn-closed veto is wired into the live reading',
-        /sessionTurnOpen !== false/.test(fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')),
+        /sessionTurnOpen !== false/.test(
+          fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8'),
+        ),
+      )
+    }
+
+    /*
+     * A manual stop must stop the pill, without waiting for a closing event.
+     *
+     * `running: !state.ended` clears on `step/end`, and a cancelled step does not always
+     * produce one — so the fold keeps saying `running: true` while the chat sits idle. The
+     * framework's session store is the authority here: it clears `running` however the turn
+     * ended. This is the reported "I pressed stop and the bolt kept counting".
+     */
+    {
+      const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
+      assert(
+        'the session store, not the fold, decides whether a turn is in flight',
+        /const turnIsOpen =/.test(clientSource) &&
+          /sessionRunning === true/.test(clientSource) &&
+          /sessionTurnOpen !== false/.test(clientSource),
+      )
+
+      // The store says the turn is over while the fold still reports the step as running.
+      sessionRunningStub = false
+      statsEnabled = true
+      statsSnapshot = { turns: [] }
+      addStatsStep(12, 0, {
+        startTime: 8_000_000,
+        endTime: null,
+        ttft: 2_500,
+        model: null,
+        decode: null,
+        tps: 90,
+        output: 400,
+        wall: null,
+        running: true,
+      })
+      const stoppedProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({
+            legacy: {
+              nodes: [],
+              turnTimings: new Map([[12, { startTime: 8_000_000 }]]),
+              partial: { turn: 12, step: 0, blocks: [{ kind: 'text', text: 'cut off' }] },
+              runningCalls: [],
+            },
+          }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: false }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        t,
+      }
+      const stoppedTree = await runtime.render(status.component, stoppedProps)
+      assert(
+        'a stopped turn shows no live row even though the fold still says running',
+        findAll(stoppedTree, (el) => String(el.props.className ?? '').includes('dsh-rum-live-row'))
+          .length === 0,
+      )
+      assert(
+        'a stopped turn leaves the pill in its plain state',
+        (() => {
+          const trigger = findAll(stoppedTree, (el) =>
+            String(el.props.className ?? '').includes('dsh-rum-trigger'),
+          )[0]
+          return trigger !== undefined && !String(trigger.props.className ?? '').includes('dsh-rum-live')
+        })(),
+      )
+      sessionRunningStub = true
+    }
+
+    /*
+     * A new turn must count from its own start, not from the previous step's.
+     *
+     * After a stop and a new message, the fold can still hold the PREVIOUS step while the live
+     * step has already moved on. Taking that step's `startTime` counted the new request from
+     * the old origin, so the total carried the earlier figure and looked like a stale
+     * accumulation.
+     */
+    {
+      const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
+      assert(
+        'the fold\u2019s start time is used only for the very step being shown',
+        /runningStatsStep\.turn === liveStep\.turn/.test(clientSource) &&
+          /runningStatsStep\.step === liveStep\.step/.test(clientSource),
+      )
+      assert(
+        'the live total is measured from that step start',
+        /const elapsedMs = start !== null \? Math\.max\(0, now - start\) : null/.test(clientSource),
       )
     }
 
@@ -1920,7 +2014,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         running: false,
       })
     }
-    statusInject.useSession('test-session')
+    statusInject.bindSession('test-session')
     statusTree = await runtime.render(status.component, statusProps)
     const rowsBefore = modelRows()
     assert(
@@ -1948,7 +2042,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
      * statistics have landed: otherwise the drawer briefly shows the previous
      * conversation's rows under the new one.
      */
-    statusInject.useSession('other-session')
+    statusInject.bindSession('other-session')
     assert(
       'the model clears the previous session’s rows the moment it is told',
       modelRows().length === 0,
@@ -2152,7 +2246,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       wall: 4600,
       running: false,
     })
-    statusInject.useSession('test-session')
+    statusInject.bindSession('test-session')
     statsSnapshot = { turns: [] }
     for (let index = 0; index < 10; index += 1) {
       addStatsStep(1, index, {

@@ -1529,7 +1529,7 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    function useLiveReading(useChat, enabled, trajectory, runningStatsStep, sessionTurnOpen) {
+    function useLiveReading(useChat, enabled, trajectory, runningStatsStep, sessionTurnOpen, sessionRunning) {
       const partial = useChat((snapshot) => snapshot.legacy.partial)
       const nodes = useChat((snapshot) => snapshot.legacy.nodes)
       const turnTimings = useChat((snapshot) => snapshot.legacy.turnTimings)
@@ -1551,26 +1551,35 @@ window.__ModuleLoader__.load({
        * step still appeared in the list and took `#1` while the live row was empty.
        */
       /*
-       * The sessions whose turn has ended are excluded below: a `partial` block, or a request
-       * the Trajectory domain still lists as running, can outlive the conversation it belongs
-       * to. When the user switches away from a streaming turn and that turn finishes in the
-       * background, those two sources keep reporting it, so the pill and the drawer went on
-       * counting a finished chat. The statistics fold is the authority here: it drops the
-       * running flag on `turn/end`, so once the fold has seen the turn close, nothing else may
-       * claim it is still live.
+       * Whether a turn is in flight.
+       *
+       * `sessionRunning` comes from the framework's session store and is the one signal that
+       * clears on ANY ending, including a manual stop. `sessionTurnOpen`, derived from the
+       * statistics fold, only clears when a closing event arrives — a cancelled step may never
+       * get one. So the store wins when it has an opinion, and the fold is only a fallback.
        */
-      const turnIsOpen = sessionTurnOpen !== false
+      const turnIsOpen =
+        sessionRunning === undefined || sessionRunning === null
+          ? sessionTurnOpen !== false
+          : sessionRunning === true
       const request = runningRequestOf(trajectory)
-      const liveStep =
-        runningStatsStep !== null && runningStatsStep !== undefined
+      /*
+       * The turn-open check comes FIRST, ahead of every source of "which step is running".
+       *
+       * Ordering it after `runningStatsStep` made the veto useless: when the fold still
+       * reported a step as running — which is exactly the cancelled case, because no
+       * `step/end` arrives — that branch won and the bolt kept pulsing on an idle chat. A
+       * closed turn must admit no live step from any source.
+       */
+      const liveStep = !turnIsOpen
+        ? null
+        : runningStatsStep !== null && runningStatsStep !== undefined
           ? { turn: runningStatsStep.turn, step: runningStatsStep.step }
-          : !turnIsOpen
-            ? null
-            : request === undefined
-              ? partial === null || partial === undefined
-                ? null
-                : { turn: partial.turn, step: partial.step }
-              : { turn: request.turn, step: request.step }
+          : request === undefined
+            ? partial === null || partial === undefined
+              ? null
+              : { turn: partial.turn, step: partial.step }
+            : { turn: request.turn, step: request.step }
       const running = enabled && liveStep !== null
       const [now, setNow] = useState(() => Date.now())
       const observation = useRef({ key: null, firstTokenAt: null })
@@ -1617,13 +1626,23 @@ window.__ModuleLoader__.load({
       /*
        * The step's origin, tightest source first:
        * 1. The statistics fold's `startTime` — the `step/start` event time itself, exact and
-       *    the very figure the Statistics view prints.
+       *    the very figure the Statistics view prints. Used ONLY when the fold's running step
+       *    is the one being shown: after a stop and a new turn, the fold can still hold the
+       *    previous step while `liveStep` has already moved on, and taking that time counted
+       *    the new request from the old one's origin — the stale total that kept growing.
        * 2. The Trajectory domain's `startedAt`, also from `step/start`, but a publication can
        *    lag the fold.
        * 3. Reconstruction from the previous step's last tool result, then the turn's start.
        */
+      const statsStart =
+        runningStatsStep !== null &&
+        runningStatsStep !== undefined &&
+        runningStatsStep.turn === liveStep.turn &&
+        runningStatsStep.step === liveStep.step
+          ? numberOrNull(runningStatsStep.metrics?.startTime)
+          : null
       const start =
-        numberOrNull(runningStatsStep?.metrics?.startTime) ??
+        statsStart ??
         numberOrNull(request?.startedAt) ??
         stepStartOf(liveStep, nodes, turnTimings)
       const key = `${liveStep.turn}:${liveStep.step}`
@@ -1928,7 +1947,15 @@ window.__ModuleLoader__.load({
 
     /** The whole geek entry: trigger, live reading, and the upward glass drawer. */
     function GeekStatus(props) {
-      const { useChat, useGeek, useRows, replaceRows, useSession: bindSession, t } = props
+      const { useChat, useGeek, useRows, replaceRows, bindSession, t } = props
+      /*
+       * The framework's own session snapshot. `running` is the authority for "a turn is in
+       * flight": the store sets it when a turn starts and clears it when the turn ends,
+       * including a cancelled one. The statistics fold only learns about a cancellation when
+       * its closing event arrives, which is why the pill could keep counting after a manual
+       * stop.
+       */
+      const sessionRunning = typeof props.useSession === 'function' ? props.useSession((snapshot) => snapshot?.running === true) : undefined
       const geek = useGeek((value) => value) === GEEK
       const rows = useRows((value) => value)
       const sessionId = props.sessionId
@@ -2009,7 +2036,22 @@ window.__ModuleLoader__.load({
         if (sessionStats === undefined) return null
         const steps = statsSteps(sessionStats)
         for (let index = steps.length - 1; index >= 0; index -= 1) {
-          if (steps[index].metrics.running === true) return steps[index]
+          const metrics = steps[index].metrics
+          if (metrics.running !== true) continue
+          /*
+           * A step that has settled its message but not yet reached `step/end` still reports
+           * `running: true`, and a cancellation does not always produce that event. The fold
+           * marks such a step `aborted` (ended without a settled reply) or `interrupted`, and
+           * either means nothing will arrive any more — so it must stop counting here rather
+           * than wait for an event that may never come.
+           */
+          if (metrics.aborted === true || metrics.interrupted === true) return null
+          if (numberOrNull(metrics.messageTime) !== null && numberOrNull(metrics.endTime) === null) {
+            // The reply is complete; only the closing event is missing. Keep showing it, but
+            // stop the clock — the figures are final.
+            return null
+          }
+          return steps[index]
         }
         return null
       }, [sessionStats])
@@ -2031,7 +2073,7 @@ window.__ModuleLoader__.load({
         return last.running !== false
       }, [sessionStats])
       const chatNodes = useChat((snapshot) => snapshot.legacy.nodes)
-      const live = useLiveReading(useChat, geek, trajectory, runningStatsStep, sessionTurnOpen)
+      const live = useLiveReading(useChat, geek, trajectory, runningStatsStep, sessionTurnOpen, sessionRunning)
 
       const triggerRef = useRef(null)
       const drawerRef = useRef(null)
@@ -2762,7 +2804,7 @@ window.__ModuleLoader__.load({
                     rows: { getSnapshot: model.getRows, subscribe: model.subscribe },
                   },
                   replaceRows: (next) => model.replace(next),
-                  useSession: (id) => model.useSession(id),
+                  bindSession: (id) => model.useSession(id),
                   /**
                    * The shipped Statistics view's data source for this session, or
                    * `undefined` when that view is absent. A thunk because the source is
