@@ -50,8 +50,7 @@ window.__ModuleLoader__.load({
     const STYLE_ID = 'dsh-recent-usage-metrics-style'
     /** Durable Geek flag. The shipped preference keeps its own two values. */
     const MODE_KEY = 'dsh.recentUsageMetrics.mode.v1'
-    /** Durable history, newest first, at most MAX_ROWS entries. */
-    const HISTORY_KEY = 'dsh.recentUsageMetrics.history.v1'
+    /** Drawer capacity: the newest settled requests it lists. */
     const MAX_ROWS = 10
     /** Shipped Chat settings namespace and field the two native levels persist through. */
     const CHAT_NS = 'ui-chat'
