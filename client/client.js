@@ -1838,13 +1838,38 @@ window.__ModuleLoader__.load({
       const useTrajectory = props.useTrajectory
       const trajectory = typeof useTrajectory === 'function' ? useTrajectory((snapshot) => snapshot) : undefined
       /*
-       * The shipped Statistics view's own data, read straight from its target. A target only
-       * materializes once something subscribes, so this subscribes for as long as the entry
-       * is mounted; activation is permanent and shared with the Statistics view, so it does
-       * not start a second fold. `useSyncExternalStore` keeps the drawer in step with it.
+       * The shipped Statistics view's own data, read straight from its target.
+       *
+       * A view target only materializes once something subscribes, and a target's
+       * `subscribe` is also what activates it. Activation is permanent and shared with the
+       * Statistics view, so this does not start a second fold — it joins the one running.
+       *
+       * The snapshot must be held in state, not read inline: the target publishes a new
+       * snapshot object on every change, but nothing re-renders this component unless it
+       * subscribes. Reading it inline during render froze the rows at whatever the first
+       * render saw — which is why the drawer showed timestamps minutes behind the log.
        */
       const statsSource = typeof props.statsSource === 'function' ? props.statsSource() : undefined
-      const statsSnapshot = statsSource === undefined ? undefined : statsSource.getSnapshot()
+      const statsSubscribe = useCallback(
+        (listener) => {
+          if (statsSource === undefined || typeof statsSource.subscribe !== 'function') {
+            return () => {}
+          }
+          return statsSource.subscribe(listener)
+        },
+        [statsSource],
+      )
+      const statsRead = useCallback(
+        () => (statsSource === undefined || typeof statsSource.getSnapshot !== 'function'
+          ? undefined
+          : statsSource.getSnapshot()),
+        [statsSource],
+      )
+      const [statsSnapshot, setStatsSnapshot] = useState(statsRead)
+      useEffect(() => {
+        setStatsSnapshot(statsRead())
+        return statsSubscribe(() => setStatsSnapshot(statsRead()))
+      }, [statsRead, statsSubscribe])
       const chatNodes = useChat((snapshot) => snapshot.legacy.nodes)
       const live = useLiveReading(useChat, geek, trajectory)
 
@@ -1876,23 +1901,20 @@ window.__ModuleLoader__.load({
       }, [sessionId, bindSession])
 
       /*
-       * The drawer's history comes from the session's statistics, so it is rebuilt from the
-       * log rather than accumulated locally. That is what keeps it consistent across
+       * The drawer's rows come from the session's statistics, rebuilt on every publication
+       * rather than accumulated locally. That is what keeps them consistent across
        * conversation switches and reloads: there is no local copy to fall out of date, and
-       * every figure is the same one the Statistics view renders.
+       * every figure is the one the Statistics view renders.
        *
-       * Steps still streaming are skipped — the pill covers the live one and a row needs
-       * settled figures.
+       * Derived during render, not in an effect: an effect would leave the first render of
+       * a newly published snapshot showing the previous rows (or placeholders), which is
+       * what made the drawer lag the log. Steps still streaming are skipped — the pill
+       * covers the live one and a row needs settled figures.
        */
-      useEffect(() => {
-        if (!geek) {
-          replaceRows([])
-          return
-        }
-        if (statsSnapshot === undefined) return
-        replaceRows(historyFromStats(statsSnapshot))
-      }, [geek, statsSnapshot, replaceRows])
-
+      const statsRows = useMemo(
+        () => (statsSnapshot === undefined ? undefined : historyFromStats(statsSnapshot)),
+        [statsSnapshot],
+      )
       /*
        * Fallback for a composition without the statistics target: derive rows from the Chat
        * snapshot and the Trajectory domain instead. This is the pre-existing path, kept so
@@ -1902,8 +1924,8 @@ window.__ModuleLoader__.load({
         () => (trajectory === undefined || trajectory === null ? NO_FIRST_TOKENS : firstTokenIndex(trajectory)),
         [trajectory],
       )
-      useEffect(() => {
-        if (!geek || statsSnapshot !== undefined) return
+      const fallbackRows = useMemo(() => {
+        if (statsRows !== undefined) return undefined
         const assistants = []
         for (const node of chatNodes ?? []) {
           if (!isAssistantNode(node)) continue
@@ -1917,8 +1939,18 @@ window.__ModuleLoader__.load({
           if (numberOrNull(timing.firstTokenTime) !== null) return readingOf(node)
           return readingOf({ ...node, timing: { ...timing, firstTokenTime: fromTrajectory } })
         }
-        replaceRows(assistants.slice(-MAX_ROWS).reverse().map(dated))
-      }, [geek, statsSnapshot, chatNodes, firstTokens, replaceRows])
+        return assistants.slice(-MAX_ROWS).reverse().map(dated)
+      }, [statsRows, chatNodes, firstTokens])
+
+      /*
+       * Publish the derived rows to the model, which the pill and the drawer both read.
+       * This runs after the render that computed them, so the visible tree already carries
+       * the right figures.
+       */
+      const derivedRows = statsRows ?? fallbackRows ?? []
+      useEffect(() => {
+        replaceRows(geek ? derivedRows : [])
+      }, [geek, derivedRows, replaceRows])
 
       /* Mount / enter / leave for the drawer's slide-up transition. */
       useEffect(() => {
@@ -2063,11 +2095,11 @@ window.__ModuleLoader__.load({
         }
       }, [pinned])
 
-      const view = useAnimatedRows(rows)
+      const view = useAnimatedRows(derivedRows)
 
       if (!geek) return null
 
-      const current = live ?? rows[0] ?? null
+      const current = live ?? derivedRows[0] ?? null
       const approximate = live !== null || current?.estimated === true
       /*
        * The pill is a plain button with an accessible name and no tooltip: the drawer
@@ -2387,11 +2419,16 @@ window.__ModuleLoader__.load({
       /*
        * The shipped Statistics view's target, per session.
        *
-       * A view target stays undefined until someone subscribes, and activation is permanent
-       * and shared with whoever else reads it, so subscribing does not add a second fold
-       * next to the Statistics view — it joins the one already running. `uiConversation` is
-       * an optional service: a composition without it yields no source and the drawer keeps
-       * its Chat-derived fallback.
+       * A view target stays undefined until someone subscribes, and a target's `subscribe`
+       * is also what activates it. Activation is permanent and shared with whoever else
+       * reads it, so subscribing does not add a second fold next to the Statistics view —
+       * it joins the one already running. `uiConversation` is an optional service: a
+       * composition without it yields no source and the drawer keeps its Chat-derived
+       * fallback.
+       *
+       * The source forwards the target's own `subscribe`, so the component's listener is the
+       * one the fold notifies — an internal no-op subscription would activate the target but
+       * leave the drawer frozen on its first snapshot.
        *
        * Sources are keyed by session id and created on demand, because the id is only known
        * once the entry renders.
@@ -2406,9 +2443,10 @@ window.__ModuleLoader__.load({
         try {
           const target = uiConversation.binding(sessionId).target(STATS_TARGET)
           if (target === undefined || target === null) return undefined
-          // Subscribing is what activates the target; the component reads via getSnapshot.
-          const unsubscribe = target.subscribe(() => {})
-          source = { getSnapshot: () => target.getSnapshot(), dispose: unsubscribe }
+          source = {
+            getSnapshot: () => target.getSnapshot(),
+            subscribe: (listener) => target.subscribe(listener),
+          }
         } catch {
           return undefined
         }
@@ -2417,9 +2455,6 @@ window.__ModuleLoader__.load({
       }
       ctx.effect(
         () => () => {
-          for (const source of statsSources.values()) {
-            try { source.dispose() } catch {}
-          }
           statsSources.clear()
         },
         'dsh-recent-usage-metrics: stats targets',

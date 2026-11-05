@@ -715,6 +715,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
    */
   let statsEnabled = true
   let statsSnapshot = { turns: [] }
+  const statsListeners = new Set()
   const statsSteps = []
   const addStatsStep = (turn, step, metrics) => {
     const existing = statsSnapshot.turns.find((entry) => entry.turn === turn)
@@ -723,13 +724,23 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     else existing.steps.push(record)
     statsSteps.push(record)
     statsSnapshot = { turns: statsSnapshot.turns.slice() }
+    for (const listener of [...statsListeners]) listener()
   }
   const statusProps = {
     ...statusInject,
     useChat: (sel) => sel(snapshot),
     useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
     useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
-    statsSource: () => (statsEnabled ? { getSnapshot: () => statsSnapshot } : undefined),
+    statsSource: () =>
+      statsEnabled
+        ? {
+            getSnapshot: () => statsSnapshot,
+            subscribe: (listener) => {
+              statsListeners.add(listener)
+              return () => statsListeners.delete(listener)
+            },
+          }
+        : undefined,
     t,
   }
   /*
@@ -1718,6 +1729,56 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       'a session change clears the stored rows',
       /useSession\(next\) \{[^}]*rows = \[\]/.test(source),
     )
+
+    /*
+     * Live updates.
+     *
+     * The statistics target publishes a new snapshot whenever the fold advances, and the
+     * entry must follow it. Reading the snapshot inline during render would freeze the rows
+     * at whatever the first render saw — which showed up as the drawer reporting timestamps
+     * minutes behind the log. The source's `subscribe` therefore has to forward the
+     * component's listener, and the derived rows have to come from that published snapshot.
+     */
+    /*
+     * Live updates.
+     *
+     * The statistics target publishes a new snapshot whenever the fold advances, and the
+     * entry must follow it. Reading the snapshot inline during render froze the rows at
+     * whatever the first render saw — the drawer reported timestamps minutes behind the
+     * log. So the component has to become a listener of the target.
+     */
+    {
+      // Rendering the entry must leave at least one listener registered on the source.
+      const before = statsListeners.size
+      statusTree = await runtime.render(status.component, statusProps)
+      assert(
+        'the entry subscribes to the statistics target',
+        statsListeners.size >= 1 && statsListeners.size >= before,
+      )
+
+      // A new publication must reach the entry: its rows follow the published snapshot.
+      statsSnapshot = { turns: [] }
+      addStatsStep(1, 0, {
+        startTime: 1_000_000,
+        endTime: 1_002_000,
+        ttft: 1800,
+        model: 2000,
+        decode: 400,
+        tps: 250,
+        output: 100,
+        wall: 2000,
+        running: false,
+      })
+      statusTree = await runtime.render(status.component, statusProps)
+      assert(
+        'a later publication updates the drawer\u2019s rows',
+        modelRows().length === 1 && modelRows()[0].tokens === 100,
+      )
+      assert(
+        'the stats source forwards the component\u2019s listener',
+        /subscribe: \(listener\) => target\.subscribe\(listener\)/.test(source),
+      )
+    }
 
     // Switching back must restore that conversation's own rows, not the other's.
     statsSnapshot = { turns: [] }
