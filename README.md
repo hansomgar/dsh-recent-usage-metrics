@@ -230,12 +230,37 @@ Chat 存储从实时 token 增量中累积它，而会话日志不存 live chunk
 | `test/lifecycle.cjs` | 在 DOM/hook shim 上跑真实的客户端：指标、十行上限、插入顺序、点击开合、清理 |
 | `test/repro-coldstart.cjs` | 回归：冷页面必须首屏中文，且双向可切换 |
 | `test/repro-hmr.cjs` | 回归：重载不得与存活的字典占用冲突 |
+| `test/repro-log.cjs` | 用本机真实会话日志复核（见下节），无日志时自动跳过 |
 
 ```powershell
 node test/lifecycle.cjs
 node test/repro-coldstart.cjs
 node test/repro-hmr.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; & "C:\Cinstall\ProgramTools\DSH\DeepSeek Harness.exe" test\repro-log.cjs
 ```
+
+## 用真实会话日志复核
+
+统计页的数字来自磁盘上的会话日志：
+
+```
+~/.dsh/sessions/<workspace>/<session-id>/session.v4.jsonl.zstd
+```
+
+`test/repro-log.cjs` 会找到最新的那份日志，按统计页自己的 `foldEvent` / `stepMetrics`
+算法重新折一遍，再检查抽屉依赖的那些性质：每步都有起始时刻、首字延迟非负且不超过总用时、
+已结算的步骤有总用时、运行中的步骤还没有总用时、抽屉选出的是最新十行且按新到旧排列。
+
+这比对着屏幕核对可靠得多：一次能覆盖上千步，而不是几行。
+
+两个容易踩的坑，脚本里都处理了：
+
+- **日志是多帧拼接的 zstd。** 单次 `zstdDecompressSync` 只解出第一帧（几百字节），
+  必须按帧魔数 `28 B5 2F FD` 切开逐个解压，否则只能拿到 `session` 头。
+- **首字时间藏在打包记录里。** 日志中没有 `assistant/live-chunk`（那是仅客户端事件，
+  不落盘），首字时刻在 `assistant/message.data.stream` 的
+  `reasoning-chunks` / `tool-call-chunks` 记录内：`time0` 加上 `dt` 逐段累加。
+  只认松散的 `chunk` 记录会让首字时间几乎全为 `--`（实测从 0% 提升到 96%）。
 
 ## 重启之后的语言
 

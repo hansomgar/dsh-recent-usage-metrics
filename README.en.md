@@ -261,12 +261,42 @@ there is none.
 | `test/lifecycle.cjs` | Runs the real client against a DOM/hook shim: metrics, ten-row cap, insertion order, click/open, disposal |
 | `test/repro-coldstart.cjs` | Regression: a cold page must paint Chinese and stay switchable both ways |
 | `test/repro-hmr.cjs` | Regression: a reload must not collide with the live dictionary claim |
+| `test/repro-log.cjs` | Verifies against a real session log (see below); skips itself when none exists |
 
 ```powershell
 node test/lifecycle.cjs
 node test/repro-coldstart.cjs
 node test/repro-hmr.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; & "C:\Cinstall\ProgramTools\DSH\DeepSeek Harness.exe" test\repro-log.cjs
 ```
+
+## Verifying against a real session log
+
+The Statistics page's figures come from the durable session log on disk:
+
+```
+~/.dsh/sessions/<workspace>/<session-id>/session.v4.jsonl.zstd
+```
+
+`test/repro-log.cjs` finds the newest one, folds it with the Statistics view's own
+`foldEvent` / `stepMetrics` algorithm, then checks the properties the drawer depends on:
+every step has a start time, first-token latency is non-negative and never exceeds the step's
+wall time, settled steps have a total, running steps do not, and the drawer selects the newest
+ten rows in descending order.
+
+That is far more reliable than comparing a few rows on screen: one run covers thousands of
+steps.
+
+Two traps the script handles:
+
+- **The log is many concatenated zstd frames.** A single `zstdDecompressSync` call returns
+  only the first frame — a few hundred bytes. The frames must be split at the magic
+  `28 B5 2F FD` and decompressed one by one, otherwise all you get is the `session` header.
+- **The first-token time lives in packed records.** The log contains no
+  `assistant/live-chunk` events (client-only, never persisted); the moment is inside the
+  `reasoning-chunks` / `tool-call-chunks` records of `assistant/message.data.stream`, as
+  `time0` plus the cumulative `dt` offsets. Reading only loose `chunk` records leaves the
+  first-token time at `--` for nearly every step (measured: 0% → 96%).
 
 ## Language after a restart
 
