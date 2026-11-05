@@ -2754,6 +2754,48 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     statusInject.bindSession('another-session')
     assert('switching sessions clears the fallback rows', modelRows().length === 0)
     statusInject.bindSession('test-session')
+
+    /*
+     * The force flag really routes to the fallback.
+     *
+     * The statistics target is present here, but the flag must make the plugin ignore it, so
+     * the rows come out of the Chat snapshot with the estimates rather than the measured
+     * figures. This is the switch used to inspect the fallback on a normal profile.
+     */
+    {
+      store.set('dsh.recentUsageMetrics.forceFallback', 'true')
+      statisticsSourceCalls = 0
+      const forcedProps = {
+        ...statusInject,
+        useChat: (sel) => sel(fallbackChat),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: false }),
+        // Present, and it would win if the flag were ignored.
+        statsSource: () => {
+          statisticsSourceCalls += 1
+          return {
+            getSnapshot: () => ({
+              turns: [{ turn: 30, steps: [{ turn: 30, step: 0, startTime: 10_000_000, ttft: 111, model: 222, output: 333, wall: 444, running: false }] }],
+            }),
+            subscribe: () => () => {},
+          }
+        },
+        useTrajectory: () => ({ eventNodes: [], requests: [] }),
+        t,
+      }
+      statusTree = await runtime.render(status.component, forcedProps)
+      const forcedRows = modelRows()
+      assert(
+        'the force flag makes the plugin ignore a present statistics target',
+        forcedRows.length === 3 && forcedRows[0].key === '30:2',
+      )
+      assert(
+        'the forced rows carry the estimated markers, not the measured ones',
+        forcedRows[2].estimated === true && forcedRows[2].tokens === 100,
+      )
+      store.delete('dsh.recentUsageMetrics.forceFallback')
+    }
   }
 
 

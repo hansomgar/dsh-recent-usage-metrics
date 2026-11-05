@@ -50,6 +50,8 @@ window.__ModuleLoader__.load({
     const STYLE_ID = 'dsh-recent-usage-metrics-style'
     /** Durable Geek flag. The shipped preference keeps its own two values. */
     const MODE_KEY = 'dsh.recentUsageMetrics.mode.v1'
+    /* TEMPORARY: forces the fallback path when set to true. See the use in GeekStatus. */
+    const FORCE_FALLBACK_KEY = 'dsh.recentUsageMetrics.forceFallback'
     /** Drawer capacity: the newest settled requests it lists. */
     const MAX_ROWS = 10
     /** Shipped Chat settings namespace and field the two native levels persist through. */
@@ -2155,7 +2157,27 @@ window.__ModuleLoader__.load({
        * subscribes. Reading it inline during render froze the rows at whatever the first
        * render saw — which is why the drawer showed timestamps minutes behind the log.
        */
-      const statsSource = typeof props.statsSource === 'function' ? props.statsSource() : undefined
+      /*
+       * TEMPORARY: force the fallback path, for observing it end to end.
+       *
+       * The primary path reads the shipped Statistics view's target, so the fallback only runs
+       * in a composition that lacks that view — which the normal profile never is. Setting this
+       * flag makes `statsSource` resolve to `undefined`, which is exactly the condition the
+       * fallback was written for.
+       *
+       * Toggle it from the browser console, then reload the page:
+       *
+       *   localStorage.setItem('dsh.recentUsageMetrics.forceFallback', 'true')   // enable
+       *   localStorage.removeItem('dsh.recentUsageMetrics.forceFallback')       // disable
+       *
+       * DELETE THIS BLOCK (and the `forced` reference below) before release.
+       */
+      const forced = readJson(FORCE_FALLBACK_KEY) === true
+      const statsSource = forced
+        ? undefined
+        : typeof props.statsSource === 'function'
+          ? props.statsSource()
+          : undefined
       const statsSubscribe = useCallback(
         (listener) => {
           if (statsSource === undefined || typeof statsSource.subscribe !== 'function') {
