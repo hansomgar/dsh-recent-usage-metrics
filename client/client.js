@@ -1593,14 +1593,27 @@ window.__ModuleLoader__.load({
           : sessionRunning === true
       const request = runningRequestOf(trajectory)
       /*
-       * The turn-open check comes FIRST, ahead of every source of "which step is running".
+       * This plugin measures MODEL OUTPUT only, so it has exactly two states: the model is
+       * writing, or it is idle. Everything else — running tools, waiting on a subagent, the
+       * turn being over — is idle.
        *
-       * Ordering it after `runningStatsStep` made the veto useless: when the fold still
-       * reported a step as running — which is exactly the cancelled case, because no
-       * `step/end` arrives — that branch won and the bolt kept pulsing on an idle chat. A
-       * closed turn must admit no live step from any source.
+       * `step/end` is the wrong signal for that: it only arrives after the step's tool calls
+       * run, so a step whose reply finished thirty seconds ago still counts as running and the
+       * bolt kept pulsing through the whole tool phase.
+       *
+       * The statistics fold's `model` is the right signal. It is `messageTime - startTime`, so
+       * it is null while the reply is streaming and a fixed value the moment the message lands.
+       * Reading it here switches the plugin to idle exactly when the model stops writing, and
+       * the reply's own row takes `#1` with its measured figures.
+       *
+       * The turn-open check stays ahead of every source: a closed turn admits no live step at
+       * all, so a step still flagged running in a stale snapshot cannot revive the bolt.
        */
-      const liveStep = !turnIsOpen
+      const replyDone =
+        runningStatsStep !== null &&
+        runningStatsStep !== undefined &&
+        numberOrNull(runningStatsStep.metrics?.model) !== null
+      const liveStep = !turnIsOpen || replyDone
         ? null
         : runningStatsStep !== null && runningStatsStep !== undefined
           ? { turn: runningStatsStep.turn, step: runningStatsStep.step }

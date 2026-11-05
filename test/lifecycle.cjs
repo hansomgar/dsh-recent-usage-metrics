@@ -1794,6 +1794,84 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     }
 
     /*
+     * Two states only: the model is writing, or the plugin is idle.
+     *
+     * This plugin measures model output. A step that is running its tools has finished writing,
+     * and `step/end` does not arrive until those tools return — waiting for it kept the bolt
+     * pulsing and a live row in the list for the whole tool phase. The fold's `model` is null
+     * while the reply streams and fixed once `assistant/message` lands, so it is the signal that
+     * matches "the model has stopped writing".
+     */
+    {
+      const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
+      assert(
+        'a finished reply ends the live state even while tools run',
+        /const replyDone =/.test(clientSource) &&
+          /numberOrNull\(runningStatsStep\.metrics\?\.model\) !== null/.test(clientSource) &&
+          /const liveStep = !turnIsOpen \|\| replyDone/.test(clientSource),
+      )
+
+      /*
+       * Behaviour: once the reply is done, the live row disappears and the step takes #1.
+       *
+       * The step still reports `running: true` (its tools are running) and has no `endTime`,
+       * which is exactly the case that used to keep the live row alive.
+       */
+      sessionRunningStub = true
+      statsEnabled = true
+      statsSnapshot = { turns: [] }
+      addStatsStep(60, 0, {
+        startTime: 5_000_000,
+        endTime: null,
+        ttft: 2_500,
+        model: 7_000,
+        decode: 4_500,
+        tps: 110,
+        output: 500,
+        wall: null,
+        running: true,
+      })
+      statsSnapshot.turns[0].running = true
+      statsSnapshot = { turns: statsSnapshot.turns.slice() }
+      const writingProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({
+            legacy: {
+              nodes: [],
+              turnTimings: new Map([[60, { startTime: 5_000_000 }]]),
+              partial: { turn: 60, step: 0, blocks: [{ kind: 'text', text: 'answering' }] },
+              runningCalls: [],
+            },
+          }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: true }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        t,
+      }
+      const toolsTree = await runtime.render(status.component, writingProps)
+      assert(
+        'a reply that finished leaves no live row while its tools run',
+        findAll(toolsTree, (el) => String(el.props.className ?? '').includes('dsh-rum-live-row'))
+          .length === 0,
+      )
+      assert(
+        'the bolt stops animating once the reply is done',
+        (() => {
+          const trigger = findAll(toolsTree, (el) =>
+            String(el.props.className ?? '').includes('dsh-rum-trigger'),
+          )[0]
+          return trigger !== undefined && !String(trigger.props.className ?? '').includes('dsh-rum-live')
+        })(),
+      )
+      assert(
+        'the finished step takes #1 with its measured model time',
+        modelRows().length === 1 && modelRows()[0].key === '60:0' && Math.round(modelRows()[0].totalMs) === 7000,
+      )
+    }
+
+    /*
      * A cancelled request gets its own row, marked as interrupted.
      *
      * A step that was stopped before its first token has no ttft, no output and sometimes no
