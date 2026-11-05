@@ -869,7 +869,16 @@ window.__ModuleLoader__.load({
     function readingOfStatsStep(entry) {
       const stats = entry.metrics
       const ttftMs = numberOrNull(stats.ttft)
-      const totalMs = numberOrNull(stats.wall)
+      /*
+       * The drawer's "total" is the Statistics view's MODEL time, not its wall time.
+       *
+       * `wall` is `endTime - startTime`, which also contains the step's tool calls: a step that
+       * thinks for 11.5 s and then runs a 31 s command reports `wall` 41.9 s but `model` 11.5 s.
+       * The drawer answers "how long did this request take to answer", so it reports `model` —
+       * and that figure is final the moment the reply lands, which is why it must not climb
+       * while tools run.
+       */
+      const totalMs = numberOrNull(stats.model)
       const tokens = numberOrNull(stats.output)
       const speed = numberOrNull(stats.tps)
       /*
@@ -1700,20 +1709,17 @@ window.__ModuleLoader__.load({
         const measuredModel = numberOrNull(settled.model)
         const measuredSpeed = numberOrNull(settled.tps)
         /*
-         * Total so far is the model time plus the tool time measured so far. `toolWall` is the
-         * union of the tool spans, so it grows as calls run and stops growing when they do —
-         * which is what makes the figure read as "work in progress" rather than a clock that
-         * keeps ticking regardless.
+         * The total is the MODEL time, and it is final once the reply lands.
          *
-         * When the model reported neither, fall back to the clock since the step began.
+         * `model` is `messageTime - startTime`, exactly the figure the Statistics view prints in
+         * its model-time column. It contains no tool time by construction, so there is nothing
+         * left to measure after the message arrives — the number freezes here instead of
+         * counting on through the tool run.
+         *
+         * Only while the reply is still streaming does the elapsed clock stand in, and then it
+         * is genuinely the model working.
          */
-        const toolWall = numberOrNull(settled.toolWall)
-        const totalMs =
-          measuredModel !== null && toolWall !== null
-            ? measuredModel + toolWall
-            : start === null
-              ? null
-              : Math.max(0, now - start)
+        const totalMs = measuredModel
         return {
           key,
           at: start ?? now,

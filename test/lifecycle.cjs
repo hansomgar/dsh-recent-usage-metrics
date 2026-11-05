@@ -1607,6 +1607,20 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         'the first-token latency is the measured one after the reply lands',
         /ttftMs: measuredTtft,/.test(source),
       )
+      assert(
+        'the total is the model time, not the wall time the Statistics view prints',
+        /*
+         * `wall` is `endTime - startTime` and includes the step's tool calls: an 11.5 s reply
+         * followed by a 31 s command reports wall 41.9 s but model 11.5 s. The drawer reports
+         * the model figure, so it is final the moment the reply lands.
+         */
+        /const totalMs = numberOrNull\(stats\.model\)/.test(source) &&
+          !/const totalMs = numberOrNull\(stats\.wall\)/.test(source),
+      )
+      assert(
+        'the settled total freezes on the model time after the reply lands',
+        /const totalMs = measuredModel/.test(source),
+      )
     }
 
     /*
