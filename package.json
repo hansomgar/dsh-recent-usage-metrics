@@ -1,7 +1,7 @@
 {
   "name": "dsh-recent-usage-metrics",
-  "version": "0.1.0",
-  "description": "Geek-mode request metrics for DSH: live TTFT / tok-s / token readout in the composer status row, plus a glass history drawer of the last 10 requests.",
+  "version": "0.2.0",
+  "description": "Geek level for the Performance & usage setting: a live reading of the newest request (first-token latency, speed, tokens, total, amortised) plus a drawer listing the last ten, all derived from the shipped Statistics view data",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -24,7 +24,8 @@
     "README.en.md",
     "screenshots.json",
     "assets/screenshot-1.png",
-    "assets/screenshot-2.png"
+    "assets/screenshot-2.png",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {
