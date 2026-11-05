@@ -2158,7 +2158,19 @@ window.__ModuleLoader__.load({
           if (numberOrNull(timing.firstTokenTime) !== null) return readingOf(node)
           return readingOf({ ...node, timing: { ...timing, firstTokenTime: fromTrajectory } })
         }
-        return assistants.reverse().map(dated)
+        /*
+         * Drop rows that carry no clock at all.
+         *
+         * The Chat snapshot keeps `timing` only for steps that streamed during this page's
+         * lifetime; a step replayed from a trimmed window can arrive with none. Such a row
+         * rendered a full line of dashes beside real ones, which reads as a broken request
+         * rather than as missing data. The statistics path is the primary source precisely
+         * because it does not have this gap.
+         */
+        return assistants
+          .reverse()
+          .map(dated)
+          .filter((row) => numberOrNull(row.at) !== null)
       }, [statsRows, chatNodes, firstTokens])
 
       /*
