@@ -881,6 +881,12 @@ window.__ModuleLoader__.load({
       const stats = entry.metrics
       const ttftMs = numberOrNull(stats.ttft)
       /*
+       * A step the fold marks aborted ended without a settled reply: the user stopped it, or the
+       * upstream failed mid-request. Either way there is no `messageTime`, so `model`, `decode`
+       * and `tps` are all null and the row would be entirely blank.
+       */
+      const interrupted = stats.aborted === true || stats.interrupted === true
+      /*
        * The drawer's "total" is the Statistics view's MODEL time, not its wall time.
        *
        * `wall` is `endTime - startTime`, which also contains the step's tool calls: a step that
@@ -888,17 +894,15 @@ window.__ModuleLoader__.load({
        * The drawer answers "how long did this request take to answer", so it reports `model` —
        * and that figure is final the moment the reply lands, which is why it must not climb
        * while tools run.
+       *
+       * An interrupted step has no `model` at all, so it falls back to `wall`. That is the
+       * figure the user actually wants there: how long the request ran before it was stopped.
+       * It is a log fact — `endTime - startTime` — so it survives a reload unchanged, unlike
+       * the live reading, which is recomputed and lost.
        */
-      const totalMs = numberOrNull(stats.model)
+      const totalMs = numberOrNull(stats.model) ?? (interrupted ? numberOrNull(stats.wall) : null)
       const tokens = numberOrNull(stats.output)
       const speed = numberOrNull(stats.tps)
-      /*
-       * A step the fold marks interrupted or aborted never produced a settled reply: a
-       * cancelled request has no first token to subtract from, so its ttft is null and the
-       * drawer used to print the same dash a not-yet-started step would. The flag lets the
-       * cell say what actually happened instead.
-       */
-      const interrupted = stats.interrupted === true || stats.aborted === true
       return {
         key: `${entry.turn}:${entry.step}`,
         at: numberOrNull(stats.startTime) ?? numberOrNull(stats.endTime),
@@ -2020,13 +2024,19 @@ window.__ModuleLoader__.load({
      * Average of the rows on screen, computed over the ones that actually carry each
      * figure (an interrupted request may have no TTFT, a placeholder no tokens). Returns
      * null for a column with no samples so the row can print a dash instead of a fake 0.
+     *
+     * Interrupted rows are excluded from every mean. Their total is wall-clock time — it
+     * includes however long the request ran before being stopped — so averaging it against
+     * model times would pull the figures toward a number that describes neither case. The
+     * row still counts toward `count`, because the caption names the list, not the sample.
      */
     function averageOf(rows) {
       if (rows.length === 0) return null
+      const measurable = rows.filter((row) => row.interrupted !== true)
       const mean = (pick) => {
         let sum = 0
         let count = 0
-        for (const row of rows) {
+        for (const row of measurable) {
           const value = pick(row)
           if (value === null || value === undefined || !Number.isFinite(value)) continue
           sum += value
@@ -2036,6 +2046,7 @@ window.__ModuleLoader__.load({
       }
       return {
         count: rows.length,
+        measured: measurable.length,
         ttftMs: mean((row) => row.ttftMs),
         speed: mean((row) => row.speed),
         tokens: mean((row) => row.tokens),
@@ -2043,8 +2054,8 @@ window.__ModuleLoader__.load({
         amortized: mean((row) => row.amortized),
         // A column is "estimated" when any sample in it was; the tilde then still means
         // the same thing it does on a single row.
-        estimated: rows.some((row) => row.estimated === true),
-        anyEstimated: rows.some((row) => row.estimated === true),
+        estimated: measurable.some((row) => row.estimated === true),
+        anyEstimated: measurable.some((row) => row.estimated === true),
       }
     }
 
@@ -2812,18 +2823,24 @@ window.__ModuleLoader__.load({
                           'span',
                           { className: 'dsh-rum-col', role: 'cell' },
                           /*
-                           * A cancelled step has no first token to report, so the column would
-                           * otherwise show the same dash as a step that never started. Say what
-                           * happened instead; it is the one figure the row can honestly give.
+                           * The first-token column reports whatever was actually measured. An
+                           * interrupted request that had already produced its first token shows
+                           * that real figure; one stopped before any token shows the dash.
                            */
-                          entry.row.interrupted === true
-                            ? t('interrupted')
-                            : secondsText(entry.row.ttftMs, t),
+                          secondsText(entry.row.ttftMs, t),
                         ),
                         h(
                           'span',
                           { className: 'dsh-rum-col dsh-rum-primary', role: 'cell' },
-                          speedText(entry.row.speed, false, t),
+                          /*
+                           * A cancelled step never settled, so it has no generation speed. The
+                           * column says what happened instead of the same dash a step that has
+                           * not started would show — the speed column is where "this produced no
+                           * rate" belongs, while first-token and total still carry real figures.
+                           */
+                          entry.row.interrupted === true
+                            ? t('interrupted')
+                            : speedText(entry.row.speed, false, t),
                         ),
                         h(
                           'span',

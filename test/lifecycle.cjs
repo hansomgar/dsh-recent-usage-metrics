@@ -1910,13 +1910,14 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       statsSnapshot = { turns: [] }
       addStatsStep(13, 0, {
         startTime: 9_000_000,
-        endTime: null,
+        endTime: 9_015_000,
         ttft: null,
         model: null,
         decode: null,
         tps: null,
         output: null,
-        wall: null,
+        // `endTime - startTime`: the span the request ran before it was stopped.
+        wall: 15_000,
         running: false,
         interrupted: true,
       })
@@ -1942,21 +1943,57 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           modelRows()[0].tokens === null,
       )
       assert(
-        'the first-token column reads "interrupted" instead of a dash',
-        (() => {
-          const trigger = findAll(cancelledTree, (el) =>
-            String(el.props.className ?? '').includes('dsh-rum-trigger'),
-          )[0]
-          if (trigger === undefined) return false
-          trigger.props.onClick({ stopPropagation() {}, preventDefault() {} })
-          return true
-        })(),
+        'the interrupted row reports the wall-clock span from the log, not a dash',
+        /*
+         * An interrupted step has no `messageTime`, so the fold gives it null `model` — and a
+         * row of nothing but dashes tells the user nothing. `wall` (`endTime - startTime`) is a
+         * log fact that survives a reload, which is exactly the "how long did it run before I
+         * stopped it" figure this row is for.
+         */
+        modelRows()[0].totalMs === 15_000,
       )
+      assert(
+        'the first-token column keeps a real measurement when one exists',
+        modelRows()[0].ttftMs === null,
+      )
+      // Open the drawer so its rows are rendered, then read the interrupted one back.
+      const trigger = findAll(cancelledTree, (el) =>
+        String(el.props.className ?? '').includes('dsh-rum-trigger'),
+      )[0]
+      assert('the drawer opens for the interrupted row', trigger !== undefined)
+      if (trigger !== undefined) {
+        trigger.props.onClick({ stopPropagation() {}, preventDefault() {} })
+      }
       const reopened = await runtime.render(status.component, cancelledProps)
       const row = findAll(reopened, (el) => String(el.props.className ?? '').includes('dsh-rum-item'))[0]
       assert(
         'the interrupted marker is rendered in that row',
         row !== undefined && normalize(textOf(row)).includes('中断'),
+      )
+      assert(
+        'the marker sits in the speed column, not the first-token column',
+        /*
+         * Both figures stay real: a request stopped after it had already streamed keeps its
+         * measured first-token time, and the span it ran is its total. What is missing is the
+         * generation rate, so that is the column that says why.
+         */
+        (() => {
+          if (row === undefined) return false
+          const cells = findAll(row, (el) =>
+            String(el.props.className ?? '').includes('dsh-rum-col'),
+          )
+          /*
+           * Only the metric cells carry `dsh-rum-col`; the index and clock do not, so the
+           * list starts at the first-token column: 0 ttft, 1 speed, 2 tokens, 3 total.
+           */
+          const firstTokenCell = cells[0]
+          const speedCell = cells[1]
+          if (firstTokenCell === undefined || speedCell === undefined) return false
+          return (
+            !normalize(textOf(firstTokenCell)).includes('中断') &&
+            normalize(textOf(speedCell)).includes('中断')
+          )
+        })(),
       )
       sessionRunningStub = true
     }
@@ -2358,6 +2395,23 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       if (start < 0) return false
       const body = source.slice(start, start + 1400)
       return /count === 0 \? null/.test(body) && /Number\.isFinite\(value\)/.test(body)
+    })(),
+  )
+  assert(
+    'the average skips interrupted rows but still counts them in the caption',
+    /*
+     * An interrupted row's total is wall-clock time — it includes however long the request ran
+     * before being stopped — so folding it into the mean would describe neither the completed
+     * requests nor the stopped one. The caption counts the list, the means do not.
+     */
+    (() => {
+      const start = source.indexOf('function averageOf(')
+      if (start < 0) return false
+      const body = source.slice(start, start + 1600)
+      return (
+        /\.filter\(\(row\) => row\.interrupted !== true\)/.test(body) &&
+        /count: rows\.length/.test(body)
+      )
     })(),
   )
 

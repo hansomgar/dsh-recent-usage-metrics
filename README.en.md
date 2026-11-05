@@ -412,6 +412,19 @@ carries `ttft`, `model`, `decode`, `tps`, `output` and `wall`.
 | **Time** | **`model`** | **model time, not the Statistics view's total** |
 | Amortised | `output ÷ model` | this plugin's own figure |
 
+**Interrupted rows:**
+
+A request that was stopped never produced an `assistant/message`, so `model`, `decode` and
+`tps` are all null. That row's **total falls back to `wall`** (`endTime − startTime`) — how
+long the request actually ran before it was stopped. It is a log fact, so it survives a reload
+unchanged, which is exactly what that column is for here.
+
+The word **"interrupted" sits in the speed column**, not the first-token column: a request that
+already streamed keeps its measured first-token time and still shows its total; the only figure
+missing is the generation rate, so that is the column that says why. Interrupted rows are
+excluded from the footer average — their total is wall-clock time, and folding it into the mean
+would pull it toward a number describing neither case — but the caption still counts all ten.
+
 **Why the total is `model` and not `wall`:**
 
 The Statistics view's total column is `wall = endTime − startTime`, which **includes the step's
