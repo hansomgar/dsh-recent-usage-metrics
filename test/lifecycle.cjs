@@ -398,9 +398,6 @@ const ctx = {
   },
 }
 
-// Most specs exercise the statistics path; the fallback specs opt in explicitly.
-sandbox.__dshRumFallbackSwitch = false
-
 exported.apply(ctx)
 
 /*
@@ -2662,9 +2659,6 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
    * rather than assumed.
    */
   {
-    // Drive the fallback explicitly: the suite runs with the switch off.
-    sandbox.__dshRumFallbackSwitch = true
-
     console.log('\n--- fallback path (no statistics target) ---')
 
     // Three settled steps, deliberately without provider usage so the estimate is exercised.
@@ -2762,45 +2756,38 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     statusInject.bindSession('test-session')
 
     /*
-     * The force flag really routes to the fallback.
+     * The choice is automatic: the presence of a statistics source decides it.
      *
-     * The statistics target is present here, but the flag must make the plugin ignore it, so
-     * the rows come out of the Chat snapshot with the estimates rather than the measured
-     * figures. This is the switch used to inspect the fallback on a normal profile.
+     * With the source absent the rows came from the Chat snapshot (asserted above). Here the
+     * source is present, and it must win — the fallback rows must disappear, replaced by the
+     * measured figures it carries.
      */
     {
-      store.set('dsh.recentUsageMetrics.forceFallback', 'true')
-      statisticsSourceCalls = 0
-      const forcedProps = {
+      const chosenProps = {
         ...statusInject,
         useChat: (sel) => sel(fallbackChat),
         useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
         useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
         useSession: (sel) => sel({ running: false }),
-        // Present, and it would win if the flag were ignored.
-        statsSource: () => {
-          statisticsSourceCalls += 1
-          return {
-            getSnapshot: () => ({
-              turns: [{ turn: 30, steps: [{ turn: 30, step: 0, startTime: 10_000_000, ttft: 111, model: 222, output: 333, wall: 444, running: false }] }],
-            }),
-            subscribe: () => () => {},
-          }
-        },
+        statsSource: () => ({
+          getSnapshot: () => ({
+            turns: [{ turn: 30, steps: [{ turn: 30, step: 0, startTime: 10_000_000, ttft: 111, model: 222, output: 333, wall: 444, running: false }] }],
+          }),
+          subscribe: () => () => {},
+        }),
         useTrajectory: () => ({ eventNodes: [], requests: [] }),
         t,
       }
-      statusTree = await runtime.render(status.component, forcedProps)
-      const forcedRows = modelRows()
+      statusTree = await runtime.render(status.component, chosenProps)
+      const chosenRows = modelRows()
       assert(
-        'the force flag makes the plugin ignore a present statistics target',
-        forcedRows.length === 3 && forcedRows[0].key === '30:2',
+        'a present statistics source wins over the Chat snapshot',
+        chosenRows.length === 1 && chosenRows[0].key === '30:0',
       )
       assert(
-        'the forced rows carry the estimated markers, not the measured ones',
-        forcedRows[2].estimated === true && forcedRows[2].tokens === 100,
+        'the statistics rows carry the measured figures, not the estimates',
+        chosenRows[0].ttftMs === 111 && chosenRows[0].tokens === 333 && chosenRows[0].estimated === false,
       )
-      store.delete('dsh.recentUsageMetrics.forceFallback')
     }
   }
 

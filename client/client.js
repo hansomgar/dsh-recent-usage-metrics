@@ -50,17 +50,6 @@ window.__ModuleLoader__.load({
     const STYLE_ID = 'dsh-recent-usage-metrics-style'
     /** Durable Geek flag. The shipped preference keeps its own two values. */
     const MODE_KEY = 'dsh.recentUsageMetrics.mode.v1'
-    /*
-     * TEMPORARY: when true, the plugin ignores the statistics target and derives its rows from
-     * the Chat snapshot — the fallback path — so that path can be inspected in the running app.
-     * Set this back to false to read the statistics target again, and delete both constants
-     * before release.
-     *
-     * The harness sets `__dshRumFallbackSwitch` to override it per case, because most specs
-     * exercise the statistics path and would otherwise be forced onto the fallback.
-     */
-    const FORCE_FALLBACK_DEFAULT = true
-    const FORCE_FALLBACK_KEY = 'dsh.recentUsageMetrics.forceFallback'
     /** Drawer capacity: the newest settled requests it lists. */
     const MAX_ROWS = 10
     /** Shipped Chat settings namespace and field the two native levels persist through. */
@@ -2167,32 +2156,11 @@ window.__ModuleLoader__.load({
        * render saw — which is why the drawer showed timestamps minutes behind the log.
        */
       /*
-       * TEMPORARY: force the fallback path, for observing it end to end.
-       *
-       * The primary path reads the shipped Statistics view's target, so the fallback only runs
-       * in a composition that lacks that view — which the normal profile never is. This switch
-       * makes `statsSource` resolve to `undefined`, which is exactly the condition the fallback
-       * was written for.
-       *
-       * CURRENTLY ON BY DEFAULT (see FORCE_FALLBACK_DEFAULT) so the fallback can be inspected
-       * in the running app without touching the console. Revert that constant to false to go
-       * back to the statistics target, and delete this whole block before release.
+       * The shipped Statistics view's data source for this session. `undefined` when that
+       * view is absent — a composition without it — which is what routes the drawer to its
+       * Chat-snapshot fallback. No switch decides this: the presence of the source does.
        */
-      /*
-       * A harness may pin the switch per case; otherwise the default above applies, or the
-       * stored flag if one is set.
-       */
-      const hostGlobal = typeof globalThis !== 'undefined' ? globalThis : undefined
-      const override = hostGlobal === undefined ? undefined : hostGlobal.__dshRumFallbackSwitch
-      const forced =
-        typeof override === 'boolean'
-          ? override
-          : FORCE_FALLBACK_DEFAULT || readJson(FORCE_FALLBACK_KEY) === true
-      const statsSource = forced
-        ? undefined
-        : typeof props.statsSource === 'function'
-          ? props.statsSource()
-          : undefined
+      const statsSource = typeof props.statsSource === 'function' ? props.statsSource() : undefined
       const statsSubscribe = useCallback(
         (listener) => {
           if (statsSource === undefined || typeof statsSource.subscribe !== 'function') {
