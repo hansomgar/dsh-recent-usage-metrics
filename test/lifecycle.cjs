@@ -2645,6 +2645,119 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   }
 
   /* ---------------------------------------------------------------- */
+  /* Fallback path: a composition with no statistics target             */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * The plugin prefers the shipped Statistics view's data. When that view is absent — a
+   * composition without `uiConversation` — it falls back to deriving rows from the Chat
+   * snapshot and the Trajectory domain, with the character estimate this plugin shipped
+   * before the statistics integration existed.
+   *
+   * That path is never taken in the normal profile, so it had only static assertions. These
+   * cases drive it end to end and print what it produces, so its numbers can be inspected
+   * rather than assumed.
+   */
+  {
+    console.log('\n--- fallback path (no statistics target) ---')
+
+    // Three settled steps, deliberately without provider usage so the estimate is exercised.
+    const fallbackNodes = [
+      {
+        kind: 'assistant',
+        turn: 30,
+        step: 0,
+        seq: 300,
+        timing: { stepStartTime: 10_000_000, firstTokenTime: 10_002_600, completedTime: 10_007_000 },
+        blocks: [{ kind: 'text', text: 'a'.repeat(400) }],
+      },
+      {
+        kind: 'assistant',
+        turn: 30,
+        step: 1,
+        seq: 301,
+        timing: { stepStartTime: 10_008_000, firstTokenTime: 10_011_800, completedTime: 10_014_000 },
+        blocks: [{ kind: 'text', text: 'b'.repeat(800) }],
+      },
+      {
+        kind: 'assistant',
+        turn: 30,
+        step: 2,
+        seq: 302,
+        timing: { stepStartTime: 10_015_000, firstTokenTime: 10_015_900, completedTime: 10_022_500 },
+        usage: { outputTokens: 1234 },
+        blocks: [{ kind: 'text', text: 'c'.repeat(120) }],
+      },
+    ]
+    const fallbackChat = { legacy: { nodes: fallbackNodes, turnTimings: new Map(), partial: null, runningCalls: [] } }
+    const fallbackProps = {
+      ...statusInject,
+      useChat: (sel) => sel(fallbackChat),
+      useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+      useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+      useSession: (sel) => sel({ running: false }),
+      // No statistics target at all: this is what makes the fallback run.
+      statsSource: () => undefined,
+      useTrajectory: () => ({ eventNodes: [], requests: [] }),
+      t,
+    }
+    statusTree = await runtime.render(status.component, fallbackProps)
+    const rows = modelRows()
+
+    console.log(`  rows produced: ${rows.length}`)
+    for (const row of rows) {
+      const clock = (v) => (typeof v === 'number' ? new Date(v).toTimeString().slice(0, 8) : '—')
+      console.log(
+        `    ${row.key}  start=${clock(row.at)}  ttft=${row.ttftMs === null ? '—' : (row.ttftMs / 1000).toFixed(1) + 's'}` +
+          `  tok=${row.tokens}${row.estimated ? '~' : ''}  total=${row.totalMs === null ? '—' : (row.totalMs / 1000).toFixed(1) + 's'}`,
+      )
+    }
+
+    assert('the fallback path produces rows without a statistics target', rows.length === 3)
+    assert(
+      'the fallback lists newest first',
+      rows[0].key === '30:2' && rows[2].key === '30:0',
+    )
+    assert(
+      'the fallback clock is the step start, not its completion',
+      /*
+       * The old defect: `completedTime` was used, so a row stamped 10:15:00 had actually
+       * finished at 10:22:30. `at` must be the step's own start, matching the statistics rows.
+       */
+      rows[0].at === 10_015_000 && rows[1].at === 10_008_000 && rows[2].at === 10_000_000,
+    )
+    assert(
+      'the fallback total is completion minus start',
+      Math.round(rows[0].totalMs) === 7_500 && Math.round(rows[1].totalMs) === 6_000,
+    )
+    assert(
+      'the fallback prefers provider usage when it exists',
+      rows[0].tokens === 1234 && rows[0].estimated === false,
+    )
+    assert(
+      'the fallback estimates tokens when usage is absent',
+      // 400 ASCII characters of prose at 4 chars/token.
+      rows[2].tokens === 100 && rows[2].estimated === true,
+    )
+    assert(
+      'the fallback marks estimates so the drawer can print the tilde',
+      rows[2].estimated === true && rows[1].estimated === true,
+    )
+    assert(
+      'no fallback row is written to localStorage',
+      store.get('dsh.recentUsageMetrics.history.v1') === undefined,
+    )
+
+    /*
+     * A different session must not inherit these rows.
+     */
+    statusInject.bindSession('another-session')
+    assert('switching sessions clears the fallback rows', modelRows().length === 0)
+    statusInject.bindSession('test-session')
+  }
+
+
+  /* ---------------------------------------------------------------- */
   /* Disposal                                                          */
   /* ---------------------------------------------------------------- */
 
