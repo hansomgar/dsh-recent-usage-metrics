@@ -417,7 +417,7 @@ assert(
   })(),
 )
 
-assert('six effects registered', effects.length === 6)
+assert('seven effects registered', effects.length === 7)
 assert(
   'waits on both slots it contributes to',
   injected.join(',') === 'settings.general.item,conversation.composer.dock',
@@ -630,7 +630,10 @@ assert(
 /* Scenarios                                                           */
 /* ------------------------------------------------------------------ */
 
-const modelRows = () => JSON.parse(store.get('dsh.recentUsageMetrics.history.v1') ?? '[]')
+/* History now lives only in memory, derived from the Statistics target.
+ * `statusInject` is assigned further down, once the entry is registered. */
+let modelRowsRef = () => []
+const modelRows = () => modelRowsRef()
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 ;(async () => {
@@ -693,7 +696,8 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   /* The composer status entry                                         */
   /* ---------------------------------------------------------------- */
 
-  const statusInject = status.options.inject()
+  const statusInject = status.options.inject('test-session')
+  modelRowsRef = () => statusInject.hooks.rows.getSnapshot()
   const t = localeStub.bind('dsh-recent-usage-metrics')
 
   // The Chat store replaces its node array on every change; the test mirrors that so
@@ -704,11 +708,28 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     nodes.push(node)
     snapshot.legacy.nodes = nodes.slice()
   }
+  /*
+   * The shipped Statistics target. The drawer now derives its rows from it, so the harness
+   * needs the same shape: `{ turns: [{ steps: [...] }] }` where each step carries the
+   * metrics the shipped `stepMetrics` produces.
+   */
+  let statsEnabled = true
+  let statsSnapshot = { turns: [] }
+  const statsSteps = []
+  const addStatsStep = (turn, step, metrics) => {
+    const existing = statsSnapshot.turns.find((entry) => entry.turn === turn)
+    const record = { turn, step, ...metrics }
+    if (existing === undefined) statsSnapshot.turns.push({ turn, steps: [record] })
+    else existing.steps.push(record)
+    statsSteps.push(record)
+    statsSnapshot = { turns: statsSnapshot.turns.slice() }
+  }
   const statusProps = {
     ...statusInject,
     useChat: (sel) => sel(snapshot),
     useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
     useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+    statsSource: () => (statsEnabled ? { getSnapshot: () => statsSnapshot } : undefined),
     t,
   }
   /*
@@ -741,6 +762,22 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     timing: { stepStartTime: 1000, firstTokenTime: 3300, completedTime: 5600 },
     usage: { outputTokens: 1024 },
     blocks: [{ kind: 'text', text: 'hello' }],
+  })
+  /*
+   * The same step as the shipped Statistics fold would report it. The drawer derives its
+   * rows from that fold now, so these metrics are what the drawer renders — `ttft`, `tps`
+   * and `wall` are the fold's own figures, not a parallel calculation.
+   */
+  addStatsStep(1, 0, {
+    startTime: 1000,
+    endTime: 5600,
+    ttft: 2300,
+    model: 4600,
+    decode: 2300,
+    tps: 445.2,
+    output: 1024,
+    wall: 4600,
+    running: false,
   })
   statusTree = await runtime.render(status.component, statusProps)
   const first = modelRows()[0]
@@ -794,7 +831,15 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     })(),
   )
 
-  /* Estimate fallback when the provider reports no usage. */
+  /*
+   * Estimate fallback when the provider reports no usage.
+   *
+   * The drawer prefers the Statistics target when it is present, and that fold reports
+   * `output: null` rather than estimating. The character estimate therefore belongs to the
+   * Chat-derived path, which is what a composition without the Statistics view uses — so
+   * this exercises that path directly.
+   */
+  statsEnabled = false
   addNode({
     kind: 'assistant',
     turn: 1,
@@ -971,16 +1016,21 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     }
     statusTree = await runtime.render(status.component, statusProps)
     assert(
-      'a late Trajectory time repairs an already-stored row',
+      'a late Trajectory time fills a row that had none',
       Math.round(modelRows()[0].ttftMs) === 1200,
     )
     assert(
-      'the repair is persisted, not just rendered',
+      'the repaired row is what the drawer holds',
       modelRows()[0].ttftMs === 1200,
     )
     assert(
-      'a live-recorded time is never overwritten by the repair',
-      /if \(row\.ttftMs !== null && row\.ttftMs !== undefined\) return row/.test(source),
+      'a step that already carries its own time keeps it',
+      /*
+       * The repair only fills a missing figure. That is now structural rather than a guard
+       * on the way in: the fallback path recomputes every row from the node, and the node's
+       * own `firstTokenTime` wins over the Trajectory reconstruction in `dated()`.
+       */
+      /if \(numberOrNull\(timing\.firstTokenTime\) !== null\) return readingOf\(node\)/.test(source),
     )
   }
 
@@ -1038,10 +1088,14 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   assert('the newest reading is first', capped[0].tokens === 14)
   assert('the eleventh-newest reading was dropped', capped.every((entry) => entry.tokens !== 4))
   assert(
-    're-recording the same step does not duplicate it',
+    're-deriving the same steps does not duplicate rows',
+    /*
+     * The model now replaces the list wholesale from the Statistics target, so a repeated
+     * derivation is idempotent by construction rather than by a dedup check on the way in.
+     */
     (() => {
       const before = modelRows().length
-      statusInject.record(modelRows()[0])
+      statusInject.replaceRows(modelRows())
       return modelRows().length === before
     })(),
   )
@@ -1588,6 +1642,118 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     })(),
   )
 
+  /*
+   * Conversation switching.
+   *
+   * Every conversation numbers its turns and steps from 1, so rows keyed on `${turn}:${step}`
+   * alone collide across conversations. Persisting them made one conversation's "1:1"
+   * overwrite another's, and switching back showed the wrong figures — the reported symptom.
+   * Rows now come from the session's own statistics and the model is told which session it
+   * is on, so switching clears what belonged to the other conversation.
+   */
+  {
+    /*
+     * Rebuild a known ten-step history for this conversation, so the block does not depend
+     * on what earlier cases left behind.
+     */
+    statsEnabled = true
+    statsSnapshot = { turns: [] }
+    for (let index = 0; index < 10; index += 1) {
+      addStatsStep(1, index, {
+        startTime: 1000 + index * 100,
+        endTime: 2000 + index * 100,
+        ttft: 200,
+        model: 1000,
+        decode: 800,
+        tps: 200,
+        output: index === 9 ? 14 : 100 + index,
+        wall: 1000,
+        running: false,
+      })
+    }
+    statusInject.useSession('test-session')
+    statusTree = await runtime.render(status.component, statusProps)
+    const rowsBefore = modelRows()
+    assert(
+      'rows carry this session\u2019s figures before the switch',
+      rowsBefore.length === 10 && rowsBefore[0].tokens === 14,
+    )
+
+    // A different session: its own stats, with the same turn/step numbering.
+    statsEnabled = true
+    statsSnapshot = { turns: [] }
+    addStatsStep(1, 0, {
+      startTime: 900000,
+      endTime: 902000,
+      ttft: 1500,
+      model: 2000,
+      decode: 500,
+      tps: 300,
+      output: 150,
+      wall: 2000,
+      running: false,
+    })
+
+    /*
+     * Switching the conversation must clear immediately, before the new session's
+     * statistics have landed: otherwise the drawer briefly shows the previous
+     * conversation's rows under the new one.
+     */
+    statusInject.useSession('other-session')
+    assert(
+      'the model clears the previous session’s rows the moment it is told',
+      modelRows().length === 0,
+    )
+    statusTree = await runtime.render(status.component, statusProps)
+    const afterSwitch = modelRows()
+    assert(
+      'switching conversation clears the previous session\u2019s rows',
+      afterSwitch.length === 1 && afterSwitch[0].tokens === 150,
+    )
+    assert(
+      'the new rows carry the new session\u2019s figures',
+      Math.round(afterSwitch[0].ttftMs) === 1500,
+    )
+    assert(
+      'a session change clears the stored rows',
+      /useSession\(next\) \{[^}]*rows = \[\]/.test(source),
+    )
+
+    // Switching back must restore that conversation's own rows, not the other's.
+    statsSnapshot = { turns: [] }
+    addStatsStep(1, 0, {
+      startTime: 1000,
+      endTime: 5600,
+      ttft: 2300,
+      model: 4600,
+      decode: 2300,
+      tps: 445.2,
+      output: 1024,
+      wall: 4600,
+      running: false,
+    })
+    statusInject.useSession('test-session')
+    statsSnapshot = { turns: [] }
+    for (let index = 0; index < 10; index += 1) {
+      addStatsStep(1, index, {
+        startTime: 1000 + index * 100,
+        endTime: 2000 + index * 100,
+        ttft: 200,
+        model: 1000,
+        decode: 800,
+        tps: 200,
+        output: index === 9 ? 14 : 100 + index,
+        wall: 1000,
+        running: false,
+      })
+    }
+    statusTree = await runtime.render(status.component, statusProps)
+    assert(
+      'switching back shows this conversation\u2019s own figures again',
+      modelRows().length === 10 && modelRows()[0].tokens === 14,
+    )
+  }
+
   /* ---------------------------------------------------------------- */
   /* Disposal                                                          */
   /* ---------------------------------------------------------------- */
@@ -1599,8 +1765,17 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   assert('style element removed on dispose', styleEls.length === 0)
   assert('slot registrations removed on dispose', registrations.size === 0)
   assert('locale claim released on dispose', dictionaries.size === 0)
-  assert('history survives dispose, so re-enabling restores it', JSON.parse(store.get('dsh.recentUsageMetrics.history.v1')).length === 10)
-  assert('the Geek flag survives dispose', store.get('dsh.recentUsageMetrics.mode.v1') === '"geek"')
+  assert(
+    'no history is written to storage, so nothing can go stale between sessions',
+    /*
+     * The drawer now derives its rows from the session's own statistics, so keeping a
+     * persisted copy is what used to make a conversation switch show another session's
+     * figures: turn and step both restart at 1, so the row keys collided. Nothing survives
+     * a reload now, and the next mount rebuilds from the log.
+     */
+    store.get('dsh.recentUsageMetrics.history.v1') === undefined,
+  )
+  assert('the Geek flag still persists', store.get('dsh.recentUsageMetrics.mode.v1') === '"geek"')
 
   console.log('\neffect labels: ' + effects.map((entry) => entry.label).join(' | '))
   const leftover = process.getActiveResourcesInfo().filter((name) => name === 'Timeout' || name === 'Immediate')

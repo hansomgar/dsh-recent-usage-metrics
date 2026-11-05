@@ -289,5 +289,48 @@ would throw and leave the UI dictionary-less — the same visible symptom by ano
   shadowed rather than duplicated.
 - Everything that outlives a render is created inside `ctx.effect`, so disabling the
   plugin restores the shipped row and removes every listener and style.
-- History and the Geek flag live in `localStorage` (`dsh.recentUsageMetrics.*`) and
-  survive a disable/enable cycle.
+- **Only the Geek flag is kept in `localStorage`** (`dsh.recentUsageMetrics.mode.v1`).
+  The drawer's history is no longer persisted; it is derived from the session's own
+  statistics, explained below.
+
+## Where the drawer's rows come from
+
+Each row reads the **same data the shipped Statistics page renders** (the `stats` view
+target) instead of computing its own copy:
+
+```js
+const target = uiConversation.binding(sessionId).target('stats')
+```
+
+That data comes from the Host-side `sessionStats` fold over the session log, and each step
+carries `ttft`, `model`, `decode`, `tps`, `output` and `wall`. The Statistics page prints
+its first-token figure as `firstToken − step/start`, so the two agree row for row instead of
+being two parallel calculations kept in step by hand.
+
+**Why the history is no longer stored locally:**
+
+The drawer used to write its history to `localStorage` under one global key, with row keys
+of the form `${turn}:${step}`. **Every conversation numbers its turns and steps from 1**, so
+one conversation's `1:1` collided with another's — switching conversations showed the wrong
+figures and switching back showed them again. That was the reported symptom.
+
+Now:
+
+- Rows are rebuilt from that conversation's own statistics on every render, so there is no
+  local copy that can go stale.
+- A reported session change clears them immediately, so the previous conversation's rows
+  never appear under the new one while its data is still arriving.
+- A page reload rebuilds from the log; nothing extra needs persisting.
+
+**A view target only exists once something subscribes** (`getSnapshot` returns `undefined`
+before that). The plugin subscribes once per session at apply time. Activation is permanent
+and shared, so this does not start a second fold alongside the Statistics view.
+
+**Fallback**: in a composition without that data (`uiConversation` absent), the drawer
+returns to the Chat-snapshot plus Trajectory-domain calculation and marks estimates with `~`.
+That path only runs when the statistics data is missing.
+
+**The live reading does not touch the statistics during streaming**: its fold rebuilds the
+whole table on every chunk. The status pill uses a lighter path instead — the Trajectory
+domain's `step/start` time plus a 150 ms local tick — and reads the statistics once each
+step settles. That keeps the counting-up effect without adding fold work on every chunk.

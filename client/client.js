@@ -803,6 +803,87 @@ window.__ModuleLoader__.load({
     const isAssistantNode = (node) =>
       node !== null && typeof node === 'object' && node.kind === 'assistant'
 
+    /**
+     * The session statistics target, which the shipped Statistics view reads.
+     *
+     * That view's own per-step derivation is `firstToken − step/start`, so reading the same
+     * target makes this drawer's figures agree with it by construction instead of by a
+     * parallel calculation that has to be kept in step. Its steps also carry the figures
+     * this drawer never derived itself (model time, decode time, tool time).
+     *
+     * `target()` hands back `{ getSnapshot, subscribe }`, and a target stays undefined until
+     * something subscribes — activation is permanent and shared, so one subscription at
+     * apply time is enough and does not add a second fold alongside the Statistics view.
+     */
+    const STATS_TARGET = 'stats'
+
+    /** The steps the statistics target currently holds, oldest first. */
+    function statsSteps(statsSnapshot) {
+      const turns = statsSnapshot?.turns
+      if (!Array.isArray(turns)) return []
+      const steps = []
+      for (const turn of turns) {
+        if (turn === null || typeof turn !== 'object') continue
+        if (!Array.isArray(turn.steps)) continue
+        for (const step of turn.steps) {
+          if (step === null || typeof step !== 'object') continue
+          if (typeof step.turn !== 'number' || typeof step.step !== 'number') continue
+          steps.push({ turn: step.turn, step: step.step, metrics: step })
+        }
+      }
+      steps.sort((left, right) =>
+        left.turn === right.turn ? left.step - right.step : left.turn - right.turn,
+      )
+      return steps
+    }
+
+    /**
+     * One drawer row from a statistics step.
+     *
+     * The statistics step already carries `ttft`, `model`, `decode`, `tps`, `output` and
+     * `wall`, computed by the shipped fold from the durable log — the very figures the
+     * Statistics view renders. `null` means that figure is genuinely unavailable for the
+     * step (a cancelled request assembles no message, for one), so it stays null rather
+     * than becoming a zero the drawer would print as if it were measured.
+     */
+    function readingOfStatsStep(entry) {
+      const stats = entry.metrics
+      const ttftMs = numberOrNull(stats.ttft)
+      const totalMs = numberOrNull(stats.wall)
+      const tokens = numberOrNull(stats.output)
+      const speed = numberOrNull(stats.tps)
+      return {
+        key: `${entry.turn}:${entry.step}`,
+        at: numberOrNull(stats.endTime),
+        startMs: numberOrNull(stats.startTime),
+        ttftMs,
+        totalMs,
+        tokens: tokens ?? 0,
+        estimated: tokens === null,
+        speed,
+        amortized:
+          tokens !== null && tokens > 0 && totalMs !== null && totalMs > 0
+            ? tokens / (totalMs / 1000)
+            : null,
+      }
+    }
+
+    /**
+     * The newest settled readings for a session, newest first, capped at the drawer's
+     * limit. A step still running is skipped: the pill already reports the live one, and a
+     * drawer row needs settled figures.
+     */
+    function historyFromStats(statsSnapshot) {
+      const steps = statsSteps(statsSnapshot)
+      const rows = []
+      for (const entry of steps) {
+        if (entry.metrics.running === true) continue
+        if (numberOrNull(entry.metrics.endTime) === null) continue
+        rows.push(readingOfStatsStep(entry))
+      }
+      return rows.slice(-MAX_ROWS).reverse()
+    }
+
     function readJson(key) {
       try {
         const raw = localStorage.getItem(key)
@@ -822,38 +903,30 @@ window.__ModuleLoader__.load({
 
     const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
 
-    /** Keep only rows that still carry what the drawer renders, newest first, capped. */
-    function normalizeHistory(candidate) {
-      if (!Array.isArray(candidate)) return []
-      const rows = []
-      for (const entry of candidate) {
-        if (entry === null || typeof entry !== 'object') continue
-        if (typeof entry.key !== 'string') continue
-        const tokens = num(entry.tokens)
-        if (tokens === null) continue
-        rows.push({
-          key: entry.key,
-          at: num(entry.at) ?? 0,
-          ttftMs: num(entry.ttftMs),
-          totalMs: num(entry.totalMs),
-          tokens,
-          estimated: entry.estimated === true,
-          speed: num(entry.speed),
-          amortized: num(entry.amortized),
-        })
-        if (rows.length >= MAX_ROWS) break
-      }
-      return rows
-    }
-
     /**
-     * The plugin's own durable state: the Geek flag plus the newest-first history.
-     * One instance per activation; components read it through the injected hook
-     * sources and record through the injected `record`.
+     * The plugin's own state: the durable Geek flag plus this session's newest-first history.
+     * One instance per activation; components read it through the injected hook sources and
+     * hand it new readings through `replace`.
      */
     function createModel() {
       let mode = readJson(MODE_KEY) === GEEK ? GEEK : null
-      let rows = normalizeHistory(readJson(HISTORY_KEY))
+      /*
+       * History is held in memory only, and replaced wholesale from the session's own
+       * stats records. Two earlier designs were wrong:
+       *
+       * - It used to persist to localStorage under one global key, with the row key being
+       *   `${turn}:${step}`. Turn and step both restart at 1 in every session, so the row
+       *   for one conversation's "1:1" collided with another's — switching conversations
+       *   mixed the two, and switching back showed the wrong figures.
+       * - It used to seed once and refuse to reseed while non-empty, so the mixed rows
+       *   were never repaired.
+       *
+       * The session log is the authority for these numbers, so the drawer reads them from
+       * there and keeps no copy of its own. Nothing survives a page reload, which is
+       * correct: the records are rebuilt from the log on the next mount.
+       */
+      let rows = []
+      let sessionId = null
       const listeners = new Set()
       const emit = () => {
         for (const listener of [...listeners]) {
@@ -874,34 +947,29 @@ window.__ModuleLoader__.load({
           emit()
         },
         getRows: () => rows,
-        /** Push one reading to the top, dropping the eleventh, and remember it. */
-        record(reading) {
-          if (reading === null || reading === undefined) return
-          if (rows.length > 0 && rows[0].key === reading.key) return
-          rows = [reading, ...rows.filter((row) => row.key !== reading.key)].slice(0, MAX_ROWS)
-          writeJson(HISTORY_KEY, rows)
-          emit()
-        },
-        /** Seed an empty history from the steps already in the loaded log. */
-        seed(readings) {
-          if (rows.length > 0) return
-          const oldestFirst = readings.slice(-MAX_ROWS)
-          if (oldestFirst.length === 0) return
-          rows = oldestFirst.slice().reverse().slice(0, MAX_ROWS)
-          writeJson(HISTORY_KEY, rows)
+        /**
+         * Point the model at one session. A different id clears the rows, because the old
+         * ones belong to another conversation and would otherwise be read as this one's.
+         */
+        useSession(next) {
+          if (next === sessionId) return
+          sessionId = next
+          rows = []
           emit()
         },
         /**
-         * Replace the stored rows with re-dated copies.
+         * Replace the whole list with the readings derived from the session's stats.
          *
-         * Used when a first-token time becomes available after seeding: the row already
-         * in the drawer predates that information, and `seed` refuses to touch a non-empty
-         * history. Only the caller decides which rows change.
+         * The caller owns the selection (newest first, capped) and the ordering; this only
+         * stores what it hands over.
          */
-        backfill(next) {
-          if (!Array.isArray(next) || next.length === 0) return
-          rows = next.slice(0, MAX_ROWS)
-          writeJson(HISTORY_KEY, rows)
+        replace(next) {
+          const value = Array.isArray(next) ? next.slice(0, MAX_ROWS) : []
+          const same =
+            value.length === rows.length &&
+            value.every((row, index) => row.key === rows[index].key && row.ttftMs === rows[index].ttftMs)
+          if (same) return
+          rows = value
           emit()
         },
         subscribe(listener) {
@@ -1754,13 +1822,14 @@ window.__ModuleLoader__.load({
 
     /** The whole geek entry: trigger, live reading, and the upward glass drawer. */
     function GeekStatus(props) {
-      const { useChat, useGeek, useRows, record, seed, backfill, t } = props
+      const { useChat, useGeek, useRows, replaceRows, useSession: bindSession, t } = props
       const geek = useGeek((value) => value) === GEEK
       const rows = useRows((value) => value)
+      const sessionId = props.sessionId
       /*
        * The Trajectory domain's snapshot. `useTrajectory` is a standard slot prop, read
        * defensively: a composition without that domain yields `undefined` and everything
-       * below falls back to the Chat snapshot alone.
+       * below falls back to what the Chat snapshot alone can say.
        *
        * It is read before the live reading because that reading needs the domain's own
        * running-step record: the Chat store only publishes a step once it has visible
@@ -1768,17 +1837,16 @@ window.__ModuleLoader__.load({
        */
       const useTrajectory = props.useTrajectory
       const trajectory = typeof useTrajectory === 'function' ? useTrajectory((snapshot) => snapshot) : undefined
-      const live = useLiveReading(useChat, geek, trajectory)
-      const nodes = useChat((snapshot) => snapshot.legacy.nodes)
       /*
-       * The first-token times for replayed history. The index is memoized on the snapshot,
-       * which is a stable reference between publications — without this the effect below
-       * would see a new Map every render and never settle.
+       * The shipped Statistics view's own data, read straight from its target. A target only
+       * materializes once something subscribes, so this subscribes for as long as the entry
+       * is mounted; activation is permanent and shared with the Statistics view, so it does
+       * not start a second fold. `useSyncExternalStore` keeps the drawer in step with it.
        */
-      const firstTokens = useMemo(
-        () => (trajectory === undefined || trajectory === null ? NO_FIRST_TOKENS : firstTokenIndex(trajectory)),
-        [trajectory],
-      )
+      const statsSource = typeof props.statsSource === 'function' ? props.statsSource() : undefined
+      const statsSnapshot = statsSource === undefined ? undefined : statsSource.getSnapshot()
+      const chatNodes = useChat((snapshot) => snapshot.legacy.nodes)
+      const live = useLiveReading(useChat, geek, trajectory)
 
       const triggerRef = useRef(null)
       const drawerRef = useRef(null)
@@ -1788,7 +1856,6 @@ window.__ModuleLoader__.load({
       const [entered, setEntered] = useState(false)
       const [pos, setPos] = useState(null)
       const [now, setNow] = useState(() => Date.now())
-      const seen = useRef(null)
       /**
        * Measured pixel widths of the pill's five metric cells, in DOM order. The drawer
        * uses them as its grid columns so each column sits exactly under the metric it
@@ -1800,18 +1867,48 @@ window.__ModuleLoader__.load({
       /* Click only: the drawer opens on the pill and closes on it, Escape, or outside. */
       const open = geek && pinned
 
-      /* Record each assistant step once, after it settles. */
+      /*
+       * Point the model at this session before reading anything from it: a different id
+       * clears rows that belong to another conversation.
+       */
+      useEffect(() => {
+        bindSession(sessionId ?? null)
+      }, [sessionId, bindSession])
+
+      /*
+       * The drawer's history comes from the session's statistics, so it is rebuilt from the
+       * log rather than accumulated locally. That is what keeps it consistent across
+       * conversation switches and reloads: there is no local copy to fall out of date, and
+       * every figure is the same one the Statistics view renders.
+       *
+       * Steps still streaming are skipped — the pill covers the live one and a row needs
+       * settled figures.
+       */
       useEffect(() => {
         if (!geek) {
-          seen.current = null
+          replaceRows([])
           return
         }
-        const assistants = nodes.filter(isAssistantNode)
-        /*
-         * A step replayed from the log carries no first-token time in the Chat snapshot,
-         * so date it from the Trajectory domain's reconstruction when that is available.
-         * A step that streamed in this session keeps its own exact value.
-         */
+        if (statsSnapshot === undefined) return
+        replaceRows(historyFromStats(statsSnapshot))
+      }, [geek, statsSnapshot, replaceRows])
+
+      /*
+       * Fallback for a composition without the statistics target: derive rows from the Chat
+       * snapshot and the Trajectory domain instead. This is the pre-existing path, kept so
+       * the drawer still lists something when `stats` is unavailable.
+       */
+      const firstTokens = useMemo(
+        () => (trajectory === undefined || trajectory === null ? NO_FIRST_TOKENS : firstTokenIndex(trajectory)),
+        [trajectory],
+      )
+      useEffect(() => {
+        if (!geek || statsSnapshot !== undefined) return
+        const assistants = []
+        for (const node of chatNodes ?? []) {
+          if (!isAssistantNode(node)) continue
+          assistants.push(node)
+        }
         const dated = (node) => {
           const key = `${node.turn}:${node.step}`
           const fromTrajectory = firstTokens.get(key)
@@ -1820,54 +1917,8 @@ window.__ModuleLoader__.load({
           if (numberOrNull(timing.firstTokenTime) !== null) return readingOf(node)
           return readingOf({ ...node, timing: { ...timing, firstTokenTime: fromTrajectory } })
         }
-        if (seen.current === null) {
-          seen.current = new Set(assistants.map((node) => `${node.turn}:${node.step}`))
-          seed(assistants.map(dated))
-          return
-        }
-        for (const node of assistants) {
-          const key = `${node.turn}:${node.step}`
-          if (seen.current.has(key)) continue
-          seen.current.add(key)
-          record(dated(node))
-        }
-      }, [geek, nodes, record, seed, firstTokens])
-
-      /*
-       * Repair history that was seeded before the Trajectory domain had assembled.
-       *
-       * That domain is another plugin's projection, so its first-token times can arrive
-       * after this plugin's first pass. Rows already stored keep their `--` unless they
-       * are re-dated here; `seed` refuses to touch a non-empty history by design.
-       *
-       * Only rows whose key matches a newly available time are touched, and only when the
-       * row has no time yet, so a value that streamed live is never overwritten.
-       */
-      useEffect(() => {
-        if (!geek || firstTokens.size === 0) return
-        const current = rows
-        if (current.length === 0) return
-        let changed = false
-        const next = current.map((row) => {
-          if (row.ttftMs !== null && row.ttftMs !== undefined) return row
-          const first = firstTokens.get(row.key)
-          if (first === undefined) return row
-          const start = row.startMs
-          if (start === null || start === undefined) return row
-          changed = true
-          const ttftMs = Math.max(0, first - start)
-          const decodeMs = row.at !== null && row.at !== undefined ? Math.max(0, row.at - first) : null
-          return {
-            ...row,
-            ttftMs,
-            speed:
-              row.tokens > 0 && decodeMs !== null && decodeMs > 0
-                ? row.tokens / (decodeMs / 1000)
-                : row.speed,
-          }
-        })
-        if (changed) backfill(next)
-      }, [geek, firstTokens, rows, backfill])
+        replaceRows(assistants.slice(-MAX_ROWS).reverse().map(dated))
+      }, [geek, statsSnapshot, chatNodes, firstTokens, replaceRows])
 
       /* Mount / enter / leave for the drawer's slide-up transition. */
       useEffect(() => {
@@ -2333,6 +2384,47 @@ window.__ModuleLoader__.load({
         'dsh-recent-usage-metrics: performance row',
       )
 
+      /*
+       * The shipped Statistics view's target, per session.
+       *
+       * A view target stays undefined until someone subscribes, and activation is permanent
+       * and shared with whoever else reads it, so subscribing does not add a second fold
+       * next to the Statistics view — it joins the one already running. `uiConversation` is
+       * an optional service: a composition without it yields no source and the drawer keeps
+       * its Chat-derived fallback.
+       *
+       * Sources are keyed by session id and created on demand, because the id is only known
+       * once the entry renders.
+       */
+      const statsSources = new Map()
+      const statsSourceFor = (sessionId) => {
+        if (sessionId === null || sessionId === undefined) return undefined
+        if (statsSources.has(sessionId)) return statsSources.get(sessionId)
+        const uiConversation = ctx.get('uiConversation')
+        if (uiConversation === undefined || uiConversation === null) return undefined
+        let source
+        try {
+          const target = uiConversation.binding(sessionId).target(STATS_TARGET)
+          if (target === undefined || target === null) return undefined
+          // Subscribing is what activates the target; the component reads via getSnapshot.
+          const unsubscribe = target.subscribe(() => {})
+          source = { getSnapshot: () => target.getSnapshot(), dispose: unsubscribe }
+        } catch {
+          return undefined
+        }
+        statsSources.set(sessionId, source)
+        return source
+      }
+      ctx.effect(
+        () => () => {
+          for (const source of statsSources.values()) {
+            try { source.dispose() } catch {}
+          }
+          statsSources.clear()
+        },
+        'dsh-recent-usage-metrics: stats targets',
+      )
+
       /* The live reading and its drawer, left of the shipped status pills. */
       ctx.effect(
         () =>
@@ -2344,14 +2436,19 @@ window.__ModuleLoader__.load({
                 order: -10,
                 locale: NS,
                 label: () => locale.bind(NS)('drawerTitle'),
-                inject: () => ({
+                inject: (sessionId) => ({
                   hooks: {
                     geek: { getSnapshot: model.getMode, subscribe: model.subscribe },
                     rows: { getSnapshot: model.getRows, subscribe: model.subscribe },
                   },
-                  record: (reading) => model.record(reading),
-                  seed: (readings) => model.seed(readings),
-                  backfill: (rows) => model.backfill(rows),
+                  replaceRows: (next) => model.replace(next),
+                  useSession: (id) => model.useSession(id),
+                  /**
+                   * The shipped Statistics view's data source for this session, or
+                   * `undefined` when that view is absent. A thunk because the source is
+                   * created on demand, once the entry reports its session id.
+                   */
+                  statsSource: () => statsSourceFor(sessionId),
                 }),
               },
               GeekStatus,
