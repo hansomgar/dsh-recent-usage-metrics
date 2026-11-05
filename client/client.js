@@ -2183,10 +2183,45 @@ window.__ModuleLoader__.load({
         [statsSource, sessionId],
       )
       const [statsSnapshot, setStatsSnapshot] = useState(statsRead)
+      /*
+       * Re-point the subscription at whatever target is current, then re-read.
+       *
+       * A conversation that is rebuilt underneath the drawer (a model switch, a reconnect, a
+       * released binding) replaces its `BoundConversation`, and with it the view store the old
+       * `target()` closure captured. Refreshing on every render rebinds the listener to the new
+       * target, so the drawer cannot keep rendering a retired snapshot while the Statistics page
+       * has already moved on.
+       */
+      if (statsSource !== undefined && typeof statsSource.refresh === 'function') {
+        statsSource.refresh()
+      }
       useEffect(() => {
         setStatsSnapshot(statsRead())
         return statsSubscribe(() => setStatsSnapshot(statsRead()))
       }, [statsRead, statsSubscribe])
+      /*
+       * Follow a conversation that is rebuilt underneath the drawer.
+       *
+       * A model switch, a reconnect, or a released binding replaces the session's
+       * `BoundConversation`, and with it the view store the old `target()` closure captured.
+       * That stale closure keeps returning its last snapshot forever — which is exactly how the
+       * drawer froze on one turn while the Statistics page moved on.
+       *
+       * On a slow tick this re-points the listener at the target that is current now and
+       * re-reads the snapshot. Both are cheap (a map lookup and a field read) and neither
+       * depends on the stale chain firing.
+       */
+      useEffect(() => {
+        if (statsSource === undefined) return undefined
+        const sync = () => {
+          if (typeof statsSource.refresh === 'function') statsSource.refresh()
+          const next = statsRead()
+          if (next !== undefined) setStatsSnapshot(next)
+        }
+        sync()
+        const timer = setInterval(sync, 1000)
+        return () => clearInterval(timer)
+      }, [statsSource, statsRead])
       /*
        * A snapshot only counts while it belongs to the session being shown.
        *
@@ -2940,82 +2975,115 @@ window.__ModuleLoader__.load({
        */
       const statsSources = new Map()
       /*
-       * The Statistics target for one session, created on first use.
+       * The Statistics target for one session.
        *
-       * `uiConversation.binding(id)` throws once that session is released, so a cached source
-       * can become stale. The cache is therefore bounded and evicts oldest-first, releasing
-       * the evicted target's subscription: without that, a long session that visits many
-       * conversations would keep one live subscription per conversation visited, and each of
-       * those keeps the conversation's fold active.
+       * The target object is looked up FRESH on every call rather than cached alongside the
+       * source. `uiConversation.binding(id)` keeps a `BoundConversation` per session, and that
+       * object owns the assembler and the view store; when the conversation is rebuilt — a model
+       * switch, a reconnect, a released binding — the old `target()` closure keeps pointing at
+       * the retired store and returns its last snapshot forever. Caching it froze the drawer on
+       * one turn while the Statistics page moved on.
+       *
+       * Only the subscriptions are cached, because those must be released on eviction and
+       * re-subscribing on every render would multiply listeners.
        */
       const STATS_SOURCE_LIMIT = 4
       const statsSourceFor = (sessionId) => {
         if (sessionId === null || sessionId === undefined) return undefined
-        if (statsSources.has(sessionId)) {
-          // Refresh recency so the active conversation is the last one evicted.
-          const existing = statsSources.get(sessionId)
-          statsSources.delete(sessionId)
-          statsSources.set(sessionId, existing)
-          return existing
-        }
         const uiConversation = ctx.get('uiConversation')
         if (uiConversation === undefined || uiConversation === null) return undefined
-        let source
-        try {
-          const target = uiConversation.binding(sessionId).target(STATS_TARGET)
-          if (target === undefined || target === null) return undefined
-          /*
-           * Track the listener/unsubscribe pairs this source handed to the target, so
-           * eviction can drop them. The target's `subscribe` returns its own unsubscribe,
-           * but nothing else would call it once the source leaves the cache.
-           */
-          const subscriptions = new Map()
-          source = {
-            getSnapshot: () => target.getSnapshot(),
-            subscribe: (listener) => {
-              const existing = subscriptions.get(listener)
-              if (existing !== undefined) return existing.dispose
-              const unsubscribe = target.subscribe(listener)
-              const dispose = () => {
-                if (subscriptions.get(listener)?.unsubscribe !== unsubscribe) return
-                subscriptions.delete(listener)
-                try {
-                  unsubscribe()
-                } catch {}
-              }
-              subscriptions.set(listener, { unsubscribe, dispose })
-              return dispose
-            },
-            release: () => {
-              for (const [listener, entry] of [...subscriptions]) {
-                subscriptions.delete(listener)
-                try {
-                  entry.unsubscribe()
-                } catch {}
-              }
-            },
+
+        /** The target that is current right now, or undefined when it cannot be resolved. */
+        const targetNow = () => {
+          try {
+            return uiConversation.binding(sessionId).target(STATS_TARGET) ?? undefined
+          } catch {
+            // The session was released (or is inactive) — no statistics for it right now.
+            return undefined
           }
-        } catch {
-          // The session was released (or is inactive) — no statistics for it.
-          return undefined
         }
-        statsSources.set(sessionId, source)
+
+        const cached = statsSources.get(sessionId)
+        if (cached !== undefined) {
+          // Refresh recency so the active conversation is the last one evicted.
+          statsSources.delete(sessionId)
+          statsSources.set(sessionId, cached)
+          return cached.source
+        }
+
+        /*
+         * Each listener is bound to the target that was current when it subscribed; a listener
+         * whose target has since been replaced is re-bound the next time it asks, which is what
+         * keeps a drawn row tracking the live fold instead of a retired one.
+         */
+        const subscriptions = new Map()
+
+        const bind = (listener) => {
+          const target = targetNow()
+          if (target === undefined) return
+          const entry = subscriptions.get(listener)
+          if (entry !== undefined && entry.target === target) return
+          if (entry !== undefined) {
+            try {
+              entry.unsubscribe()
+            } catch {}
+            subscriptions.delete(listener)
+          }
+          try {
+            subscriptions.set(listener, { target, unsubscribe: target.subscribe(listener) })
+          } catch {}
+        }
+
+        const dispose = (listener) => {
+          const entry = subscriptions.get(listener)
+          if (entry === undefined) return
+          subscriptions.delete(listener)
+          try {
+            entry.unsubscribe()
+          } catch {}
+        }
+
+        const source = {
+          /** Always the newest snapshot the session's own target holds. */
+          getSnapshot: () => {
+            const target = targetNow()
+            return target === undefined ? undefined : target.getSnapshot()
+          },
+          subscribe: (listener) => {
+            bind(listener)
+            return () => dispose(listener)
+          },
+          /**
+           * Re-point every listener at the target that is current now.
+           *
+           * Called on each render: one map lookup per listener, and it is what lets the drawer
+           * follow a conversation that was rebuilt underneath it.
+           */
+          refresh: () => {
+            for (const listener of [...subscriptions.keys()]) bind(listener)
+          },
+          release: () => {
+            for (const listener of [...subscriptions.keys()]) dispose(listener)
+          },
+        }
+
+        statsSources.set(sessionId, { source })
         while (statsSources.size > STATS_SOURCE_LIMIT) {
           const oldest = statsSources.keys().next()
           if (oldest.done === true) break
           const evicted = statsSources.get(oldest.value)
           statsSources.delete(oldest.value)
           try {
-            evicted?.release?.()
+            evicted?.source?.release?.()
           } catch {}
         }
         return source
       }
       ctx.effect(
         () => () => {
-          for (const source of statsSources.values()) {
+          for (const entry of statsSources.values()) {
             try {
-              source.release?.()
+              entry.source.release?.()
             } catch {}
           }
           statsSources.clear()

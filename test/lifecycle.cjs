@@ -2599,13 +2599,25 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       assert(
         'the stats source forwards the component\u2019s listener',
         /*
-         * The source must hand the component's own listener to the target — an internal
-         * no-op subscription would activate the target but leave the drawer frozen on its
-         * first snapshot. It also has to remember the unsubscribe so eviction can drop it.
+         * The source must hand the component's own listener to the target — an internal no-op
+         * subscription would activate the target but leave the drawer frozen on its first
+         * snapshot. It also has to remember the unsubscribe so eviction can drop it.
          */
         /subscribe: \(listener\) => \{/.test(source) &&
-          /const unsubscribe = target\.subscribe\(listener\)/.test(source) &&
-          /subscriptions\.set\(listener, \{ unsubscribe, dispose \}\)/.test(source),
+          /target\.subscribe\(listener\)/.test(source) &&
+          /subscriptions\.set\(listener, \{ target, unsubscribe: target\.subscribe\(listener\) \}\)/.test(source),
+      )
+      assert(
+        'the target is resolved fresh rather than cached with the source',
+        /*
+         * `uiConversation.binding(id)` replaces its `BoundConversation` when a conversation is
+         * rebuilt (a model switch, a reconnect). A cached `target()` closure keeps pointing at
+         * the retired view store and returns its last snapshot forever, which froze the drawer
+         * on one turn while the Statistics page moved on.
+         */
+        /const targetNow = \(\) => \{/.test(source) &&
+          /getSnapshot: \(\) => \{\s*const target = targetNow\(\)/.test(source) &&
+          /refresh: \(\) => \{/.test(source),
       )
     }
 
