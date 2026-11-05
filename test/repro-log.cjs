@@ -92,34 +92,63 @@ function isTokenDelta(chunk) {
 /**
  * First-token time inside one `assistant/message.data.stream`.
  *
- * Packed runs carry a base time plus per-fragment deltas, and they are where the first token
- * of a real turn usually lives: a live-chunk event is client-only and never reaches the log,
- * so a fold that only reads loose `chunk` records reports no first token for almost every
- * step.
+ * Mirrors the shipped `assistantStreamFirstTokenTime` from dsh-llm exactly, because a
+ * near-miss here produces false mismatches: a packed run must find its first NON-EMPTY
+ * fragment and reconstruct that fragment's time from `time0` plus the cumulative `dt`
+ * offsets, while a tool-call run that begins with a name is dated at `time0` directly.
+ * Reading `time0` for every packed run instead lands on the run's first slot, which is often
+ * an empty fragment, and the figure drifts by a few hundred milliseconds.
+ *
+ * Packed runs matter at all because a live-chunk event is client-only and never reaches the
+ * log: without them a fold reports no first token for almost every step.
  */
 function firstTokenOfStream(stream) {
   if (!Array.isArray(stream)) return null
   const isNumber = (value) => typeof value === 'number' && Number.isFinite(value)
+
+  /** The shipped `firstRunMemberTime`: walk the fragments, accumulating `dt`. */
+  const firstRunMember = (run, accept) => {
+    // The shipped helper picks the field by TYPE, not by whichever is present: a tool-call
+    // run stores its fragments in `args`, every other packed run in `texts`. Reading
+    // `texts ?? args` picks the wrong array when both exist and shifts the result.
+    const fragments = run.type === 'tool-call-chunks' ? run.args : run.texts
+    if (!Array.isArray(fragments)) return null
+    let at = run.time0
+    if (!isNumber(at)) return null
+    for (let index = 0; index < fragments.length; index += 1) {
+      if (index > 0) {
+        const gap = run.dt?.[index - 1]
+        if (!isNumber(gap)) return null
+        at += gap
+      }
+      if (accept(fragments[index])) return at
+    }
+    return null
+  }
+
+  /** The shipped `runFirstTokenTime`. */
+  const runFirstToken = (run) => {
+    if (run.type === 'tool-call-chunks' && run.name !== undefined) {
+      return isNumber(run.time0) ? run.time0 : null
+    }
+    return firstRunMember(run, (fragment) => fragment !== '')
+  }
+
   for (const record of stream) {
     if (record === null || typeof record !== 'object') continue
     if (record.type === 'chunk') {
       if (isTokenDelta(record.chunk) && isNumber(record.time)) return record.time
       continue
     }
-    if (record.type !== 'reasoning-chunks' && record.type !== 'tool-call-chunks') continue
-    const texts = record.texts ?? record.args
-    if (!Array.isArray(texts) || texts.length === 0) continue
-    if (record.type === 'tool-call-chunks' && record.name !== undefined && isNumber(record.time0)) return record.time0
-    let at = record.time0
-    if (!isNumber(at)) continue
-    for (let index = 0; index < texts.length; index += 1) {
-      if (index > 0) {
-        const gap = record.dt?.[index - 1]
-        if (!isNumber(gap)) break
-        at += gap
-      }
-      if (typeof texts[index] === 'string' && texts[index] !== '') return at
-    }
+    /*
+     * Every packed delta run, not just the two obvious ones. `text-chunks` is the MOST
+     * common and the one that carries the first token of a normal turn: skipping it made the
+     * fold fall through to the tool-call run further down the stream and report a latency
+     * several hundred milliseconds too large.
+     */
+    if (record.type !== 'text-chunks' && record.type !== 'reasoning-chunks' && record.type !== 'tool-call-chunks') continue
+    const time = runFirstToken(record)
+    if (time !== null) return time
   }
   return null
 }
@@ -246,6 +275,58 @@ assert(
   'the newest drawer row is the newest step that has figures',
   drawer[0] === undefined || drawer[0] === withFigures.at(-1),
 )
+
+/** `HH:MM:SS`, the form the drawer's clock column prints. */
+const clock = (value) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  const date = new Date(value)
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/*
+ * If a live report from the running page is present, compare it against this fold.
+ *
+ * The report is written by the plugin's temporary diagnostic beacon. Running this check is
+ * how the drawer was confirmed to agree with the Statistics view step for step; it is
+ * skipped when no report exists, so the suite stays runnable on a clean machine.
+ */
+const reportPath = path.join(__dirname, '..', '.rum-report.json')
+if (fs.existsSync(reportPath)) {
+  let report = null
+  try {
+    report = JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+  } catch {
+    report = null
+  }
+  if (report !== null && report.latest !== undefined && report.latest !== null) {
+    const latest = report.latest
+    const sameLog = typeof latest.sessionId === 'string' && log.path.includes(latest.sessionId)
+    if (!sameLog) {
+      console.log('\n(skipped the live comparison: the report is for another session)')
+    } else {
+      console.log('\nlive comparison against the report:')
+      const byKey = new Map()
+      for (const entry of metrics) byKey.set(`${entry.turn}:${entry.step}`, entry)
+      let compared = 0
+      let agreed = 0
+      for (const row of latest.rows ?? []) {
+        const fromLog = byKey.get(row.key)
+        if (fromLog === undefined) continue
+        compared += 1
+        const same =
+          row.atClock === clock(fromLog.start) &&
+          row.ttftMs === fromLog.ttft &&
+          row.tokens === fromLog.output &&
+          row.totalMs === fromLog.wall
+        if (same) agreed += 1
+        else console.log(`  DIFF  ${row.key}: drawer ${row.atClock}/${row.ttftMs}/${row.tokens}/${row.totalMs} vs log ${clock(fromLog.start)}/${fromLog.ttft}/${fromLog.output}/${fromLog.wall}`)
+      }
+      assert('every reported row matches the log exactly', compared > 0 && agreed === compared)
+      assert('the report carries a full page of ten rows', (latest.rows ?? []).length === 10)
+    }
+  }
+}
 
 console.log(`\n${checks} checks, ${failures} failed`)
 console.log(`log summary: ${metrics.length} steps, ${metrics.filter((e) => e.ttft !== null).length} with a first token`)
