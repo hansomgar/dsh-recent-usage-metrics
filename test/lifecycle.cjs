@@ -1611,6 +1611,18 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         !/settled\.messageTime/.test(source),
       )
       assert(
+        'the tilde follows the reading, not the fact that it is live',
+        /*
+         * The marker means "estimated". It used to be hard-wired for anything live, so a live
+         * reading that had switched to measured figures still printed "~480 tok" beside a real
+         * figure — the reported "drawer shows estimates while the Statistics page shows exact".
+         */
+        /const approximate = current\?\.estimated === true/.test(source) &&
+          !/speedText\(live\.[a-z]+, true, t\)/.test(source) &&
+          !/tokensText\(live\.[a-z]+, true, t\)/.test(source) &&
+          /speedText\(live\.speed, live\.estimated === true, t\)/.test(source),
+      )
+      assert(
         'the step object the drawer reads really carries model and output',
         /*
          * Guards the assumption above with the fixture the harness already feeds the drawer:

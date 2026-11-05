@@ -2447,7 +2447,15 @@ window.__ModuleLoader__.load({
       if (!geek) return null
 
       const current = live ?? derivedRows[0] ?? null
-      const approximate = live !== null || current?.estimated === true
+      /*
+       * The tilde marks an ESTIMATE, not "this row is live".
+       *
+       * It used to be `live !== null || current?.estimated === true`, so every live reading got
+       * the marker regardless of its source — and after the reply lands the live reading is
+       * measured, not estimated. The row's own flag decides now: a live reading that has
+       * switched to measured figures prints like a settled row.
+       */
+      const approximate = current?.estimated === true
       /*
        * The pill is a plain button with an accessible name and no tooltip: the drawer
        * opens on click only, matching the shipped statistics pill's dialog behaviour.
@@ -2647,14 +2655,14 @@ window.__ModuleLoader__.load({
                           h(
                             'span',
                             { className: 'dsh-rum-col dsh-rum-primary', role: 'cell' },
-                            speedText(live.speed, true, t),
+                            speedText(live.speed, live.estimated === true, t),
                           ),
-                          h('span', { className: 'dsh-rum-col', role: 'cell' }, tokensText(live.tokens, true, t)),
+                          h('span', { className: 'dsh-rum-col', role: 'cell' }, tokensText(live.tokens, live.estimated === true, t)),
                           h('span', { className: 'dsh-rum-col', role: 'cell' }, secondsText(live.totalMs, t)),
                           h(
                             'span',
                             { className: 'dsh-rum-col', role: 'cell' },
-                            speedText(live.amortized, true, t),
+                            speedText(live.amortized, live.estimated === true, t),
                           ),
                         )
                       : null,
