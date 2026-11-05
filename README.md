@@ -249,13 +249,30 @@ Chat 存储从实时 token 增量中累积它，而会话日志不存 live chunk
 
 ## 安装
 
+已发布到 npm，包名 `dsh-recent-usage-metrics`：
+
 ```powershell
-# 在 dsh GUI 的插件管理器中安装，或：
-#   plugin_manager install_bundle，target 指向本目录
+# 在 dsh GUI 的插件管理器里搜索并安装，或直接：
+npm install dsh-recent-usage-metrics
 ```
 
-该 bundle 把本目录链接进 profile，因此改完 `client/client.js` 刷新页面即可生效。
-宿主侧代码永远不需要重启，因为它本身就存在。
+也可以把它加进 profile 的 `package.json` 依赖，再由插件管理器安装。
+
+**开发模式**：把 profile 里的依赖改成 `link:` 指向本目录，这样改完 `client/client.js`
+刷新页面即可生效。宿主侧代码永远不需要重启，因为它本身就存在。
+
+## 发布
+
+推 `v*` 标签即由 GitHub Actions 自动发布，认证走 OIDC trusted publishing，
+**不需要任何 npm token**。
+
+```powershell
+npm version patch          # 改版本号并打 tag
+git push --follow-tags     # 推送后自动发布
+```
+
+工作流会先校验标签与 `package.json` 的版本一致，不一致直接失败，避免发错版本。
+发布产物带 provenance 签名，npm 上可在包页面看到来源证明。
 
 ## 目录结构
 
@@ -266,6 +283,8 @@ Chat 存储从实时 token 增量中累积它，而会话日志不存 live chunk
 | `cordis.patch.yml` | 唯一插入的那一行 Loader 条目 |
 | `locale/en.json`、`locale/zh.json` | 插件管理器里显示的标题与说明 |
 | `icon.svg` | 插件图标 |
+| `CHANGELOG.md` | 各版本改动 |
+| `.github/workflows/publish.yml` | 推标签时自动发布到 npm |
 | `test/lifecycle.cjs` | 在 DOM/hook shim 上跑真实的客户端：指标、十行上限、插入顺序、点击开合、清理 |
 | `test/repro-coldstart.cjs` | 回归：冷页面必须首屏中文，且双向可切换 |
 | `test/repro-hmr.cjs` | 回归：重载不得与存活的字典占用冲突 |
@@ -277,6 +296,8 @@ node test/repro-coldstart.cjs
 node test/repro-hmr.cjs
 $env:ELECTRON_RUN_AS_NODE='1'; & "C:\Cinstall\ProgramTools\DSH\DeepSeek Harness.exe" test\repro-log.cjs
 ```
+
+四套共 227 项检查。
 
 ## 用真实会话日志复核
 
@@ -336,8 +357,31 @@ const target = uiConversation.binding(sessionId).target('stats')
 ```
 
 那份数据由宿主侧的 `sessionStats` fold 从会话日志算出，每步都带着 `ttft`、`model`、
-`decode`、`tps`、`output`、`wall`。统计页自己显示的首 token 就是
-`firstToken − step/start`，因此两边逐行一致，不再存在两套口径。
+`decode`、`tps`、`output`、`wall`。
+
+**字段对应关系：**
+
+| 抽屉的列 | 取自 | 说明 |
+| --- | --- | --- |
+| 时间 | `startTime` | `step/start` 的时刻，与统计页一致 |
+| 首字 | `ttft` | `firstToken − startTime` |
+| 速度 | `tps` | `output ÷ decode` |
+| 输出 Token | `output` | 上游返回的 usage |
+| **总用时** | **`model`** | **模型用时，不是统计页的「总用时」列** |
+| 折算速度 | `output ÷ model` | 本插件独有 |
+
+**总用时为何取 `model` 而不是 `wall`：**
+
+统计页的「总用时」列是 `wall = endTime − startTime`，它**把工具调用也算了进去**。
+一个思考 11.5 秒、随后跑 31 秒工具的步骤，`wall` 是 41.9 秒而 `model` 是 11.5 秒。
+本插件只统计模型输出性能，所以取 `model`——它天然不含工具时间，回复一落地就是最终值，
+不再随工具执行增长。
+
+**流式期间为什么带 `~`：**
+
+模型正在输出时，宿主还没拿到上游的 `usage`，此时 `output` 为 `null`。
+插件改用字符估算（按内容类型分别标定系数），所以那段数字带 `~`。
+`usage` 一到（几乎就是回复完成的同一刻），立刻切成实测值，`~` 消失。
 
 **为什么不再本地保存：**
 
@@ -348,16 +392,18 @@ const target = uiConversation.binding(sessionId).target('stats')
 现在：
 
 - 抽屉的行在每次渲染时从该会话自己的统计数据重建，没有本地副本可以过期
-- 收到会话切换的消息时立刻清空，避免新数据到达前短暂显示上一个会话的行
+- 快照带会话标记，切换会话的瞬间旧数据即失效，不会短暂显示上一个会话的行
 - 页面刷新后自动从日志重建，不需要额外的持久化
 
 **视图目标需要先订阅才会存在**（`getSnapshot` 在订阅前返回 `undefined`）。插件在
 `apply` 时按会话订阅一次；激活是永久且共享的，所以不会在统计页之外再跑一份 fold。
 
-**降级路径**：若某个组装没有统计页数据（`uiConversation` 不存在），抽屉退回原先的
-Chat 快照 + 轨迹域算法，并按估算标记 `~`。这条路径只在缺少统计数据时生效。
+**拿不到统计视图时**，插件自动退回 Chat 快照 + 轨迹域自行计算（兜底路径）。
+这条路径不落盘、也按会话隔离，但它读不到 `model`，所以三态会退化为两态。
+它的字符估算系数与主路径相同。决定走哪条路径的唯一依据是那份数据源在不在，
+没有任何开关参与。
 
-**流式期间不读统计数据**：那套 fold 每来一个 chunk 就会重建整张表。状态栏的实时读数
-走另一条更轻的路径（轨迹域的 `step/start` 时刻 + 每 150 ms 的本地 tick），
-只在步骤结算后读一次统计数据定稿。这样既保住了「数字从 0 开始爬」的观感，
-也不会在流式期间额外增加 fold 的负担。
+**流式期间不额外催动 fold**：那套 fold 每来一个 chunk 就会重建整张表，而它本来就由
+统计页或宿主驱动。状态栏的实时读数在回复完成前用字符估算与本地 tick，回复一落地
+（`model` 有值）就切到折叠给出的实测值。这样既保住了「数字从 0 开始爬」的观感，
+也不会因为插件而多跑一份 fold。

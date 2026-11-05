@@ -281,14 +281,32 @@ built, and undated rows keep showing `--` — the previous behaviour, with no er
 
 ## Install
 
+Published to npm as `dsh-recent-usage-metrics`:
+
 ```powershell
-# from the dsh GUI's Plugin Manager, or:
-#   plugin_manager install_bundle with target = this directory
+# from the dsh GUI's Plugin Manager, or directly:
+npm install dsh-recent-usage-metrics
 ```
 
-The bundle links this directory into the profile, so editing `client/client.js` and
-reloading the page picks up the change. Host-side code never needs a restart because
-there is none.
+It can also be added to the profile's `package.json` dependencies and installed from there.
+
+**Development mode**: point the profile dependency at this directory with `link:`, so editing
+`client/client.js` and reloading the page picks up the change. Host-side code never needs a
+restart because there is none.
+
+## Release
+
+Pushing a `v*` tag publishes automatically through GitHub Actions, authenticated with OIDC
+trusted publishing — **no npm token is involved**.
+
+```powershell
+npm version patch          # bump the version and create the tag
+git push --follow-tags     # push, and the release publishes itself
+```
+
+The workflow first checks that the tag matches the `package.json` version and fails on a
+mismatch, so a wrong version cannot slip out. Published tarballs carry a provenance statement,
+visible on the package page.
 
 ## Layout
 
@@ -299,6 +317,8 @@ there is none.
 | `cordis.patch.yml` | The one inserted Loader row |
 | `locale/en.json`, `locale/zh.json` | Plugin Manager title and description |
 | `icon.svg` | Plugin icon |
+| `CHANGELOG.md` | What changed in each version |
+| `.github/workflows/publish.yml` | Publishes to npm when a tag is pushed |
 | `test/lifecycle.cjs` | Runs the real client against a DOM/hook shim: metrics, ten-row cap, insertion order, click/open, disposal |
 | `test/repro-coldstart.cjs` | Regression: a cold page must paint Chinese and stay switchable both ways |
 | `test/repro-hmr.cjs` | Regression: a reload must not collide with the live dictionary claim |
@@ -379,9 +399,32 @@ const target = uiConversation.binding(sessionId).target('stats')
 ```
 
 That data comes from the Host-side `sessionStats` fold over the session log, and each step
-carries `ttft`, `model`, `decode`, `tps`, `output` and `wall`. The Statistics page prints
-its first-token figure as `firstToken − step/start`, so the two agree row for row instead of
-being two parallel calculations kept in step by hand.
+carries `ttft`, `model`, `decode`, `tps`, `output` and `wall`.
+
+**How the columns map:**
+
+| Drawer column | Field | Note |
+| --- | --- | --- |
+| At | `startTime` | the `step/start` moment, same as the Statistics view |
+| TTFT | `ttft` | `firstToken − startTime` |
+| Speed | `tps` | `output ÷ decode` |
+| Tokens | `output` | the provider's reported usage |
+| **Time** | **`model`** | **model time, not the Statistics view's total** |
+| Amortised | `output ÷ model` | this plugin's own figure |
+
+**Why the total is `model` and not `wall`:**
+
+The Statistics view's total column is `wall = endTime − startTime`, which **includes the step's
+tool calls**. A step that thinks for 11.5 s and then runs a 31 s command shows `wall` 41.9 s but
+`model` 11.5 s. This plugin measures model output only, so it reports `model` — a figure that
+contains no tool time by construction, and is therefore final the moment the reply lands.
+
+**Why the figures carry `~` while streaming:**
+
+Until the model finishes, the Host has no `usage` from the provider, so `output` is `null`. The
+plugin falls back to a character estimate (coefficients fitted per content type), which is why
+those figures carry `~`. The moment `usage` arrives — which is essentially the same instant the
+reply completes — the measured value takes over and the `~` disappears.
 
 **Why the history is no longer stored locally:**
 
