@@ -1794,28 +1794,35 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     }
 
     /*
-     * Two states only: the model is writing, or the plugin is idle.
+    /*
+     * Three states: the model writing, the tools running, idle.
      *
-     * This plugin measures model output. A step that is running its tools has finished writing,
-     * and `step/end` does not arrive until those tools return — waiting for it kept the bolt
-     * pulsing and a live row in the list for the whole tool phase. The fold's `model` is null
-     * while the reply streams and fixed once `assistant/message` lands, so it is the signal that
-     * matches "the model has stopped writing".
+     * This plugin has two kinds of busy. While the model writes, the pill shows the pulsing
+     * bolt and the drawer header says so. Once assistant/message lands the model has stopped,
+     * but the step is still open because its tools are running: the request is still in flight,
+     * so it keeps its live row, and both markers switch to the tool glyph and the tool wording.
+     * Only when the step ends does the row settle into the list.
+     *
+     * The fold's model is what separates the first two: it is null while the reply streams and
+     * fixed the moment the message lands. endTime separates the second from idle.
      */
     {
       const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
       assert(
-        'a finished reply ends the live state even while tools run',
-        /const replyDone =/.test(clientSource) &&
-          /numberOrNull\(runningStatsStep\.metrics\?\.model\) !== null/.test(clientSource) &&
-          /const liveStep = !turnIsOpen \|\| replyDone/.test(clientSource),
+        'the phase is derived from model then endTime',
+        /const livePhase = \(\(\) => \{/.test(clientSource) &&
+          /if \(numberOrNull\(metrics\.model\) === null\) return 'writing'/.test(clientSource) &&
+          /if \(numberOrNull\(metrics\.endTime\) === null\) return 'tools'/.test(clientSource),
+      )
+      assert(
+        'a composition without the fold still reports a writing model',
+        /if \(request !== undefined\) return 'writing'/.test(clientSource) &&
+          /if \(partial !== null && partial !== undefined\) return 'writing'/.test(clientSource),
       )
 
       /*
-       * Behaviour: once the reply is done, the live row disappears and the step takes #1.
-       *
-       * The step still reports `running: true` (its tools are running) and has no `endTime`,
-       * which is exactly the case that used to keep the live row alive.
+       * Behaviour: a step whose reply landed but whose tools still run reports tools, keeps its
+       * live row, and swaps the marker.
        */
       sessionRunningStub = true
       statsEnabled = true
@@ -1833,7 +1840,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       })
       statsSnapshot.turns[0].running = true
       statsSnapshot = { turns: statsSnapshot.turns.slice() }
-      const writingProps = {
+      const toolsProps = {
         ...statusInject,
         useChat: (sel) =>
           sel({
@@ -1850,26 +1857,44 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
         t,
       }
-      const toolsTree = await runtime.render(status.component, writingProps)
+      const toolsTree = await runtime.render(status.component, toolsProps)
       assert(
-        'a reply that finished leaves no live row while its tools run',
+        'a reply whose tools still run keeps its live row',
         findAll(toolsTree, (el) => String(el.props.className ?? '').includes('dsh-rum-live-row'))
-          .length === 0,
+          .length === 1,
       )
       assert(
-        'the bolt stops animating once the reply is done',
+        'that live row uses the tool glyph, not the bolt',
+        findAll(toolsTree, (el) => String(el.props.className ?? '').includes('dsh-rum-tool-icon'))
+          .length >= 1 &&
+          findAll(toolsTree, (el) => String(el.props.className ?? '') === 'dsh-rum-live-bolt')
+            .length === 0,
+      )
+      assert(
+        'the pill keeps pulsing during the tool phase',
         (() => {
           const trigger = findAll(toolsTree, (el) =>
             String(el.props.className ?? '').includes('dsh-rum-trigger'),
           )[0]
-          return trigger !== undefined && !String(trigger.props.className ?? '').includes('dsh-rum-live')
+          return trigger !== undefined && String(trigger.props.className ?? '').includes('dsh-rum-live')
         })(),
       )
+      const triggerForHeader = findAll(toolsTree, (el) =>
+        String(el.props.className ?? '').includes('dsh-rum-trigger'),
+      )[0]
+      triggerForHeader.props.onClick({ stopPropagation() {}, preventDefault() {} })
+      const opened = await runtime.render(status.component, toolsProps)
       assert(
-        'the finished step takes #1 with its measured model time',
-        modelRows().length === 1 && modelRows()[0].key === '60:0' && Math.round(modelRows()[0].totalMs) === 7000,
+        'the header reads the tool wording, not the streaming word',
+        (() => {
+          const head = findAll(opened, (el) =>
+            String(el.props.className ?? '').includes('dsh-rum-head-count'),
+          )[0]
+          return head !== undefined && normalize(textOf(head)) === '调用工具中'
+        })(),
       )
     }
+
 
     /*
      * A cancelled request gets its own row, marked as interrupted.

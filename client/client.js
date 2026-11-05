@@ -89,6 +89,7 @@ window.__ModuleLoader__.load({
       drawerCount: '最近 {count} 条',
       drawerEmpty: '还没有完成的请求。发一条消息后，它的指标会出现在这里。',
       drawerLive: '生成中',
+      drawerTools: '调用工具中',
       interrupted: '中断',
       colIndex: '#',
       colTime: '时间',
@@ -124,6 +125,7 @@ window.__ModuleLoader__.load({
       drawerCount: 'Last {count}',
       drawerEmpty: 'No completed requests yet. Send a message and its metrics appear here.',
       drawerLive: 'Streaming',
+      drawerTools: 'Calling tools',
       interrupted: 'Interrupted',
       colIndex: '#',
       colTime: 'At',
@@ -460,6 +462,16 @@ window.__ModuleLoader__.load({
   flex: none;
   color: var(--dsw-alias-brand-primary);
   animation: dsh-rum-pulse 1.4s ease-in-out infinite;
+}
+/*
+ * The tool-phase marker.
+ *
+ * Same box and same pulse as the bolt, so the pill does not shift when the state changes — only
+ * the glyph inside changes. The colour is the state blue rather than the brand blue so the two
+ * phases remain distinguishable for a reader who cannot see which shape is drawn.
+ */
+.dsh-rum-tool-icon {
+  color: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary));
 }
 .dsh-rum-empty {
   flex: 1 1 auto;
@@ -1259,6 +1271,31 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * The tool-phase marker: a capital T.
+     *
+     * The plugin has two kinds of "busy": the model writing, and the request still in flight
+     * while its tools run. The first keeps the bolt; the second gets this, so the two are
+     * distinguishable at a glance without reading the numbers.
+     *
+     * Drawn as a path rather than as text: an svg scales with the pill's icon box and inherits
+     * currentColor, so it animates and themes exactly like the bolt beside it.
+     */
+    function ToolIcon(props) {
+      return h(
+        'svg',
+        { viewBox: '0 0 16 16', className: props.className, 'aria-hidden': true, fill: 'currentColor' },
+        /*
+         * A capital T on a 16-unit grid: a 10-wide bar with slightly softened corners, and a
+         * 3.6-wide stem. The proportions are the ones that stayed legible at 11px in the
+         * candidate sheet.
+         */
+        h('path', {
+          d: 'M3 2.6h10a.9.9 0 0 1 0 1.8H9.8v9a.9.9 0 0 1-1.8 0v-9H3.9a.9.9 0 0 1-.9-.9z',
+        }),
+      )
+    }
+
     function ChevronIcon(props) {
       return h(
         'svg',
@@ -1593,27 +1630,51 @@ window.__ModuleLoader__.load({
           : sessionRunning === true
       const request = runningRequestOf(trajectory)
       /*
-       * This plugin measures MODEL OUTPUT only, so it has exactly two states: the model is
-       * writing, or it is idle. Everything else — running tools, waiting on a subagent, the
-       * turn being over — is idle.
+       * Three states, all decided from the statistics fold:
        *
-       * `step/end` is the wrong signal for that: it only arrives after the step's tool calls
-       * run, so a step whose reply finished thirty seconds ago still counts as running and the
-       * bolt kept pulsing through the whole tool phase.
+       * 1. `writing` — the model is producing the reply. `model` is null because it is
+       *    `messageTime - startTime`.
+       * 2. `tools` — the reply is complete but the step has not ended: its tool calls are
+       *    running. `model` is fixed and `endTime` is still null.
+       * 3. idle — the step ended, or there is no running step at all.
        *
-       * The statistics fold's `model` is the right signal. It is `messageTime - startTime`, so
-       * it is null while the reply is streaming and a fixed value the moment the message lands.
-       * Reading it here switches the plugin to idle exactly when the model stops writing, and
-       * the reply's own row takes `#1` with its measured figures.
+       * The distinction matters because only the first is "the model is working". The second is
+       * this plugin's own idea of activity worth marking: the request is still in flight, so it
+       * keeps a live row, but the model has stopped writing, so the marker changes from the
+       * bolt to a tool glyph and the drawer header says so.
        *
-       * The turn-open check stays ahead of every source: a closed turn admits no live step at
-       * all, so a step still flagged running in a stale snapshot cannot revive the bolt.
+       * A closed turn admits no live step at all, so a step still flagged running in a stale
+       * snapshot cannot revive either marker.
        */
-      const replyDone =
-        runningStatsStep !== null &&
-        runningStatsStep !== undefined &&
-        numberOrNull(runningStatsStep.metrics?.model) !== null
-      const liveStep = !turnIsOpen || replyDone
+      /*
+       * Three states, decided by the statistics fold when it has a running step:
+       *
+       * 1. `writing` — the model is producing the reply (`model` is null).
+       * 2. `tools` — the reply is complete but the step has not ended (`model` fixed,
+       *    `endTime` null), so its tool calls are running.
+       * 3. idle — the step ended, or the turn closed.
+       *
+       * A composition without that fold falls back to the other sources, and there the phase is
+       * simply `writing`: a partial block or a Trajectory request is by definition the model
+       * streaming. Treating "no fold" as idle is what would break the fallback entirely.
+       *
+       * A closed turn admits no live step at all, so a step still flagged running in a stale
+       * snapshot cannot revive either marker.
+       */
+      const livePhase = (() => {
+        if (!turnIsOpen) return null
+        if (runningStatsStep !== null && runningStatsStep !== undefined) {
+          const metrics = runningStatsStep.metrics
+          if (numberOrNull(metrics.model) === null) return 'writing'
+          if (numberOrNull(metrics.endTime) === null) return 'tools'
+          return null
+        }
+        // No fold: the partial/request sources only ever describe a reply being written.
+        if (request !== undefined) return 'writing'
+        if (partial !== null && partial !== undefined) return 'writing'
+        return null
+      })()
+      const liveStep = livePhase === null
         ? null
         : runningStatsStep !== null && runningStatsStep !== undefined
           ? { turn: runningStatsStep.turn, step: runningStatsStep.step }
@@ -1759,6 +1820,7 @@ window.__ModuleLoader__.load({
               ? measuredTokens / (measuredModel / 1000)
               : null,
           replyLanded: true,
+          phase: livePhase,
         }
       }
 
@@ -1783,6 +1845,7 @@ window.__ModuleLoader__.load({
         speed: tokens > 0 && decodeMs !== null && decodeMs > 0 ? tokens / (decodeMs / 1000) : null,
         amortized: tokens > 0 && elapsedMs !== null && elapsedMs > 0 ? tokens / (elapsedMs / 1000) : null,
         replyLanded: false,
+        phase: livePhase,
       }
     }
 
@@ -2500,7 +2563,9 @@ window.__ModuleLoader__.load({
               setPinned((current) => !current)
             },
           },
-          h(BoltIcon, { className: 'dsh-rum-bolt' }),
+          live?.phase === 'tools'
+            ? h(ToolIcon, { className: 'dsh-rum-bolt dsh-rum-tool-icon' })
+            : h(BoltIcon, { className: 'dsh-rum-bolt' }),
           h(
             'span',
             { className: 'dsh-rum-parts', ref: partsRef },
@@ -2580,7 +2645,11 @@ window.__ModuleLoader__.load({
                   'span',
                   { className: 'dsh-rum-head-count' },
                   /* The header counts what the list below actually holds, not the model's copy of it. */
-                  live === null ? t('drawerCount', { count: derivedRows.length }) : t('drawerLive'),
+                  live === null
+                      ? t('drawerCount', { count: derivedRows.length })
+                      : live.phase === 'tools'
+                        ? t('drawerTools')
+                        : t('drawerLive'),
                 ),
               ),
               h('div', { className: 'dsh-rum-rule', 'aria-hidden': true }),
@@ -2642,7 +2711,9 @@ window.__ModuleLoader__.load({
                              * marker reads as one idea in both places rather than a dot here and
                              * a bolt there.
                              */
-                            h(BoltIcon, { className: 'dsh-rum-live-bolt' }),
+                            live.phase === 'tools'
+                              ? h(ToolIcon, { className: 'dsh-rum-live-bolt dsh-rum-tool-icon' })
+                              : h(BoltIcon, { className: 'dsh-rum-live-bolt' }),
                           ),
                           /*
                            * The clock, not the word "streaming".
