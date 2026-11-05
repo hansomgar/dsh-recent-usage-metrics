@@ -1595,6 +1595,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
            * exactly the wide label this replaced.
            */
           normalize(textOf(cells[0])) === '' &&
+            String(cells[0].props.className ?? '').includes('dsh-rum-index') &&
             (() => {
               const dot = findAll(cells[0], (el) => String(el.props.className ?? '') === 'dsh-rum-live-dot')[0]
               if (dot === undefined) return false

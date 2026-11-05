@@ -415,6 +415,18 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-label-tertiary);
   text-align: left;
 }
+/*
+ * The index cells are flex boxes so a row number and the streaming dot share one alignment
+ * rule. With inline content, a 6px dot aligned on the text baseline sits visibly lower than
+ * a digit: the baseline is the bottom of the glyph, while the dot has no descender. Centring
+ * both on the same line box is what makes the dot appear level with "1", "2", "3".
+ */
+.dsh-rum-index {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 1.4em;
+}
 .dsh-rum-primary {
   color: var(--dsw-alias-label-primary);
 }
@@ -434,14 +446,20 @@ window.__ModuleLoader__.load({
 .dsh-rum-live-row {
   background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
 }
-/* The streaming marker: a pulsing dot in the index column, where a row number would sit. */
+/*
+ * The streaming marker: a pulsing dot in the index column, where a row number would sit.
+ *
+ * Its box is sized like the digits beside it and centred by the index cell's flex rule, so
+ * it appears level with "1", "2", "3" rather than sitting on the text baseline.
+ */
 .dsh-rum-live-dot {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--dsw-alias-brand-primary);
-  vertical-align: middle;
   animation: dsh-rum-pulse 1.4s ease-in-out infinite;
 }
 .dsh-rum-empty {
@@ -2371,7 +2389,15 @@ window.__ModuleLoader__.load({
                           h(
                             'span',
                             {
-                              className: 'dsh-rum-col',
+                              /*
+                               * Both classes the numbered rows compose: `dsh-rum-col` carries the
+                               * cell box (min-width, overflow, ellipsis, nowrap) and
+                               * `dsh-rum-index` the index colour and left alignment. The live
+                               * cell previously had only `dsh-rum-col`, so it sat at a different
+                               * x and baseline than the numbers below it and the dot did not
+                               * line up with the `#` column.
+                               */
+                              className: 'dsh-rum-col dsh-rum-index',
                               role: 'cell',
                               'aria-label': t('drawerLive'),
                               title: t('drawerLive'),
