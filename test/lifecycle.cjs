@@ -1586,6 +1586,30 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     )
 
     /*
+     * Once the reply has landed, the measured figures replace the estimate.
+     *
+     * `assistant/message` arrives when the reply is complete, while `step/end` only lands after
+     * the step's tool calls. In that window the step is still `running` but produces nothing
+     * more, so continuing to count showed a live figure growing while nothing happened, and the
+     * character estimate still read "~0 tok" next to it. The fold already knows the real
+     * tokens, first-token latency and model duration at that point.
+     */
+    {
+      assert(
+        'a landed reply switches the live reading to measured values',
+        /const replyLanded = settled !== null && numberOrNull\(settled\.messageTime\) !== null/.test(source),
+      )
+      assert(
+        'measured tokens replace the estimate once the reply has landed',
+        /tokens: measuredTokens,\s*\n\s*estimated: false/.test(source),
+      )
+      assert(
+        'the first-token latency is the measured one after the reply lands',
+        /ttftMs: measuredTtft,/.test(source),
+      )
+    }
+
+    /*
      * The live row's time column shows a clock, not the word "streaming".
      *
      * The Statistics view prints a step's `step/start` time as soon as the step exists, so

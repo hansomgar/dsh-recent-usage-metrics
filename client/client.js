@@ -1677,6 +1677,60 @@ window.__ModuleLoader__.load({
           Math.round(tokensOfSegment(preparingArgsText(runningCalls), CHARS_PER_TOKEN_TOOL_ARGS))
 
       /*
+       * The model's reply can be finished while the step is still open.
+       *
+       * `assistant/message` lands when the reply is complete, but `step/end` only arrives after
+       * the step's tool calls run. Between those two moments the step is still `running` and
+       * has produced nothing more — every token it will ever report is already known. Counting
+       * on from the clock there showed a live figure that grew while nothing was happening, and
+       * the character estimate stayed at its starting value, so the pill read "~0 tok" beside a
+       * total that kept climbing.
+       *
+       * Once the fold knows `messageTime`, the measured figures replace the estimate entirely:
+       * tokens, first-token latency and the model's own duration all come from the log, and the
+       * clock stops because there is nothing left to measure.
+       */
+      const settled = runningStatsStep !== null && runningStatsStep !== undefined
+        ? runningStatsStep.metrics
+        : null
+      const replyLanded = settled !== null && numberOrNull(settled.messageTime) !== null
+      if (replyLanded) {
+        const measuredTtft = numberOrNull(settled.ttft)
+        const measuredTokens = numberOrNull(settled.output)
+        const measuredModel = numberOrNull(settled.model)
+        const measuredSpeed = numberOrNull(settled.tps)
+        /*
+         * Total so far is the model time plus the tool time measured so far. `toolWall` is the
+         * union of the tool spans, so it grows as calls run and stops growing when they do —
+         * which is what makes the figure read as "work in progress" rather than a clock that
+         * keeps ticking regardless.
+         *
+         * When the model reported neither, fall back to the clock since the step began.
+         */
+        const toolWall = numberOrNull(settled.toolWall)
+        const totalMs =
+          measuredModel !== null && toolWall !== null
+            ? measuredModel + toolWall
+            : start === null
+              ? null
+              : Math.max(0, now - start)
+        return {
+          key,
+          at: start ?? now,
+          ttftMs: measuredTtft,
+          totalMs,
+          tokens: measuredTokens,
+          estimated: false,
+          speed: measuredSpeed,
+          amortized:
+            measuredTokens !== null && measuredTokens > 0 && measuredModel !== null && measuredModel > 0
+              ? measuredTokens / (measuredModel / 1000)
+              : null,
+          replyLanded: true,
+        }
+      }
+
+      /*
        * Until the first token arrives the reading counts up from the step's own start —
        * that is what makes the figure visibly grow instead of appearing at its final value.
        * Once it arrives, the same subtraction the settled row performs takes over, so the
@@ -1696,6 +1750,7 @@ window.__ModuleLoader__.load({
         estimated: true,
         speed: tokens > 0 && decodeMs !== null && decodeMs > 0 ? tokens / (decodeMs / 1000) : null,
         amortized: tokens > 0 && elapsedMs !== null && elapsedMs > 0 ? tokens / (elapsedMs / 1000) : null,
+        replyLanded: false,
       }
     }
 
