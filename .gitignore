@@ -1,6 +1,11 @@
 # Scratch space used while developing or debugging this plugin.
 .scratch/
 
+# Throwaway scripts written while investigating a bug. They are dot-prefixed so they never
+# resemble the real sources; one of them reached a commit once because nothing excluded it.
+.*.cjs
+.*.mjs
+
 # Prepared assets for the awesome-dsh-plugin submission PR.
 .submission/
 
