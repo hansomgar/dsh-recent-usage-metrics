@@ -1832,6 +1832,87 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           /sessionTurnOpen !== false/.test(clientSource),
       )
 
+      /*
+       * Only the newest turn may supply the live step.
+       *
+       * A stale snapshot once kept a five-minute-old step flagged as running after its own
+       * `step/end` had arrived; scanning every turn found it and the pill counted from that
+       * start — 309 s and climbing while the real request sat in a later turn.
+       */
+      {
+        sessionRunningStub = true
+        statsEnabled = true
+        statsSnapshot = { turns: [] }
+        // An old turn whose step still claims to be running.
+        addStatsStep(40, 0, {
+          startTime: 1_000_000,
+          endTime: null,
+          ttft: 2_000,
+          model: null,
+          decode: null,
+          tps: 90,
+          output: 100,
+          wall: null,
+          running: true,
+        })
+        // The newest turn: a fresh step that has just started.
+        addStatsStep(41, 0, {
+          startTime: 9_999_000,
+          endTime: null,
+          ttft: null,
+          model: null,
+          decode: null,
+          tps: null,
+          output: null,
+          wall: null,
+          running: true,
+        })
+        const staleProps = {
+          ...statusInject,
+          useChat: (sel) =>
+            sel({
+              legacy: {
+                nodes: [],
+                turnTimings: new Map([[41, { startTime: 9_999_000 }]]),
+                partial: { turn: 41, step: 0, blocks: [{ kind: 'text', text: 'working' }] },
+                runningCalls: [],
+              },
+            }),
+          useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+          useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+          useSession: (sel) => sel({ running: true }),
+          statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+          t,
+        }
+        await runtime.render(status.component, staleProps)
+        /*
+         * The rendered pill must describe the NEWEST turn's step.
+         *
+         * Turn 40's step claims `running: true` but belongs to an older turn, so if it were
+         * chosen the live row would be built from its start (1_000_000) and read a huge elapsed
+         * time. Turn 41's step starts at 9_999_000. What matters is that the code scans the last
+         * turn and builds the reading from THAT turn's step, which is what the next assertion
+         * checks by reading the shape it produces.
+         */
+        assert(
+          'a stale turn never supplies the live step',
+          /*
+           * Both readers must take the LAST turn, and the live one must iterate that turn's
+           * own steps and build its reading from them. Checking the count of the pattern rather
+           * than a bare `test` matters: the file contains two such readers (this one and the
+           * turn-open probe), so a mutation that changes only one of them would still match.
+           */
+          (clientSource.match(/const last = turns\[turns\.length - 1\]/g) ?? []).length === 2 &&
+            /for \(let index = last\.steps\.length - 1/.test(clientSource) &&
+            /return \{ turn: last\.turn, step: metrics\.step, metrics \}/.test(clientSource),
+        )
+        assert(
+          'a closed newest turn has no live step at all',
+          /if \(last\.running === false\) return null/.test(clientSource),
+        )
+        sessionRunningStub = true
+      }
+
       // The store says the turn is over while the fold still reports the step as running.
       sessionRunningStub = false
       statsEnabled = true

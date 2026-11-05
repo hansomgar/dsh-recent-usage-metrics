@@ -2115,9 +2115,30 @@ window.__ModuleLoader__.load({
        */
       const runningStatsStep = useMemo(() => {
         if (sessionStats === undefined) return null
-        const steps = statsSteps(sessionStats)
-        for (let index = steps.length - 1; index >= 0; index -= 1) {
-          const metrics = steps[index].metrics
+        const turns = sessionStats?.turns
+        if (!Array.isArray(turns) || turns.length === 0) return null
+        /*
+         * Only the LAST turn can hold the live step.
+         *
+         * Scanning every turn for `running: true` picked up a stale one: a step whose own
+         * `step/end` had long since arrived still carried the flag in a snapshot that had not
+         * been fully re-folded, and the pill counted from ITS start — 309 s and climbing, on a
+         * timestamp five minutes old, while the actual request sat in a later turn. A running
+         * step can only exist in the newest turn, so anything older is discarded.
+         */
+        const last = turns[turns.length - 1]
+        if (last === null || typeof last !== 'object') return null
+        if (!Array.isArray(last.steps) || last.steps.length === 0) return null
+        /*
+         * A closed turn has no live step at all. `buildTurns` sets a turn's `running` to false
+         * once its end marker is folded, and it also clears the last step's flag at that point
+         * — but a snapshot that has not been re-folded can still show the step as running. The
+         * turn's own flag is the cheaper, more reliable gate.
+         */
+        if (last.running === false) return null
+        for (let index = last.steps.length - 1; index >= 0; index -= 1) {
+          const metrics = last.steps[index]
+          if (metrics === null || typeof metrics !== 'object') continue
           if (metrics.running !== true) continue
           /*
            * A step the fold marked `aborted` ended without a settled reply, and nothing more
@@ -2130,7 +2151,7 @@ window.__ModuleLoader__.load({
            * that as finished killed the live row mid-turn.
            */
           if (metrics.aborted === true || metrics.interrupted === true) return null
-          return steps[index]
+          return { turn: last.turn, step: metrics.step, metrics }
         }
         return null
       }, [sessionStats])
