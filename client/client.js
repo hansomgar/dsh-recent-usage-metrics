@@ -89,6 +89,7 @@ window.__ModuleLoader__.load({
       drawerCount: '最近 {count} 条',
       drawerEmpty: '还没有完成的请求。发一条消息后，它的指标会出现在这里。',
       drawerLive: '生成中',
+      interrupted: '中断',
       colIndex: '#',
       colTime: '时间',
       colTtft: '首字',
@@ -123,6 +124,7 @@ window.__ModuleLoader__.load({
       drawerCount: 'Last {count}',
       drawerEmpty: 'No completed requests yet. Send a message and its metrics appear here.',
       drawerLive: 'Streaming',
+      interrupted: 'Interrupted',
       colIndex: '#',
       colTime: 'At',
       /*
@@ -870,11 +872,19 @@ window.__ModuleLoader__.load({
       const totalMs = numberOrNull(stats.wall)
       const tokens = numberOrNull(stats.output)
       const speed = numberOrNull(stats.tps)
+      /*
+       * A step the fold marks interrupted or aborted never produced a settled reply: a
+       * cancelled request has no first token to subtract from, so its ttft is null and the
+       * drawer used to print the same dash a not-yet-started step would. The flag lets the
+       * cell say what actually happened instead.
+       */
+      const interrupted = stats.interrupted === true || stats.aborted === true
       return {
         key: `${entry.turn}:${entry.step}`,
         at: numberOrNull(stats.startTime) ?? numberOrNull(stats.endTime),
         startMs: numberOrNull(stats.startTime),
         ttftMs,
+        interrupted,
         totalMs,
         /*
          * `0` is a real measurement, so an unreported count must stay `null` and print the
@@ -903,11 +913,21 @@ window.__ModuleLoader__.load({
      * `ttft` is the figure that appears exactly when the first token arrives, so it is the
      * signal for "has anything happened".
      */
+    /**
+     * Whether a statistics step reports anything at all.
+     *
+     * A step that was cancelled before its first token has no `ttft`, no `output` and no
+     * `endTime` on some paths, yet it is still a request the user issued and stopped — it
+     * belongs in the drawer, marked as interrupted. Only a step that has not started is
+     * excluded.
+     */
     function statsStepHasFigures(metrics) {
       return (
         numberOrNull(metrics.ttft) !== null ||
         numberOrNull(metrics.output) !== null ||
-        numberOrNull(metrics.endTime) !== null
+        numberOrNull(metrics.endTime) !== null ||
+        metrics.interrupted === true ||
+        metrics.aborted === true
       )
     }
 
@@ -2039,18 +2059,16 @@ window.__ModuleLoader__.load({
           const metrics = steps[index].metrics
           if (metrics.running !== true) continue
           /*
-           * A step that has settled its message but not yet reached `step/end` still reports
-           * `running: true`, and a cancellation does not always produce that event. The fold
-           * marks such a step `aborted` (ended without a settled reply) or `interrupted`, and
-           * either means nothing will arrive any more — so it must stop counting here rather
-           * than wait for an event that may never come.
+           * A step the fold marked `aborted` ended without a settled reply, and nothing more
+           * will arrive for it — so it must not keep the clock running. `interrupted` is the
+           * same story from the turn's close marker.
+           *
+           * Do NOT infer "finished" from a present `messageTime` alone: that field is set by
+           * `assistant/message`, which lands BEFORE the step's tool calls run, so a perfectly
+           * healthy step in its tool phase has a message time and no `endTime` yet. Treating
+           * that as finished killed the live row mid-turn.
            */
           if (metrics.aborted === true || metrics.interrupted === true) return null
-          if (numberOrNull(metrics.messageTime) !== null && numberOrNull(metrics.endTime) === null) {
-            // The reply is complete; only the closing event is missing. Keep showing it, but
-            // stop the clock — the figures are final.
-            return null
-          }
           return steps[index]
         }
         return null
@@ -2548,7 +2566,18 @@ window.__ModuleLoader__.load({
                           { className: 'dsh-rum-clock', role: 'cell', title: agoText(entry.row.at, now, t) },
                           clockText(entry.row.at),
                         ),
-                        h('span', { className: 'dsh-rum-col', role: 'cell' }, secondsText(entry.row.ttftMs, t)),
+                        h(
+                          'span',
+                          { className: 'dsh-rum-col', role: 'cell' },
+                          /*
+                           * A cancelled step has no first token to report, so the column would
+                           * otherwise show the same dash as a step that never started. Say what
+                           * happened instead; it is the one figure the row can honestly give.
+                           */
+                          entry.row.interrupted === true
+                            ? t('interrupted')
+                            : secondsText(entry.row.ttftMs, t),
+                        ),
                         h(
                           'span',
                           { className: 'dsh-rum-col dsh-rum-primary', role: 'cell' },

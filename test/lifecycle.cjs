@@ -1678,13 +1678,89 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     }
 
     /*
-     * A manual stop must stop the pill, without waiting for a closing event.
+     * A cancelled request gets its own row, marked as interrupted.
      *
-     * `running: !state.ended` clears on `step/end`, and a cancelled step does not always
-     * produce one — so the fold keeps saying `running: true` while the chat sits idle. The
-     * framework's session store is the authority here: it clears `running` however the turn
-     * ended. This is the reported "I pressed stop and the bolt kept counting".
+     * A step that was stopped before its first token has no ttft, no output and sometimes no
+     * endTime, so the "has figures" filter used to drop it entirely — the row the user expects
+     * never appeared. The fold marks it `interrupted` (or `aborted`), and that is enough to
+     * deserve a row: it is a request that was really issued.
      */
+    {
+      statsEnabled = true
+      sessionRunningStub = false
+      statsSnapshot = { turns: [] }
+      addStatsStep(13, 0, {
+        startTime: 9_000_000,
+        endTime: null,
+        ttft: null,
+        model: null,
+        decode: null,
+        tps: null,
+        output: null,
+        wall: null,
+        running: false,
+        interrupted: true,
+      })
+      const cancelledProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: false }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        t,
+      }
+      const cancelledTree = await runtime.render(status.component, cancelledProps)
+      assert(
+        'a step with no figures is still listed when it was interrupted',
+        modelRows().length === 1 && modelRows()[0].key === '13:0',
+      )
+      assert(
+        'the interrupted row carries the flag and no invented figures',
+        modelRows()[0].interrupted === true &&
+          modelRows()[0].ttftMs === null &&
+          modelRows()[0].tokens === null,
+      )
+      assert(
+        'the first-token column reads "interrupted" instead of a dash',
+        (() => {
+          const trigger = findAll(cancelledTree, (el) =>
+            String(el.props.className ?? '').includes('dsh-rum-trigger'),
+          )[0]
+          if (trigger === undefined) return false
+          trigger.props.onClick({ stopPropagation() {}, preventDefault() {} })
+          return true
+        })(),
+      )
+      const reopened = await runtime.render(status.component, cancelledProps)
+      const row = findAll(reopened, (el) => String(el.props.className ?? '').includes('dsh-rum-item'))[0]
+      assert(
+        'the interrupted marker is rendered in that row',
+        row !== undefined && normalize(textOf(row)).includes('中断'),
+      )
+      sessionRunningStub = true
+    }
+
+    /*
+     * A healthy step in its tool phase must keep the live row.
+     *
+     * `messageTime` is set by `assistant/message`, which lands BEFORE the step's tools run, so
+     * a step with a message time and no `endTime` is normal mid-turn. Treating that as finished
+     * killed the live row on a perfectly running request — the reported "it gets stuck on the
+     * first unfinished entry and never counts the new one".
+     */
+    {
+      const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
+      assert(
+        'a message time alone is not taken as the step ending',
+        !/messageTime\) !== null && numberOrNull\(metrics\.endTime\) === null/.test(clientSource),
+      )
+      assert(
+        'only an aborted or interrupted step stops the live reading',
+        /metrics\.aborted === true \|\| metrics\.interrupted === true/.test(clientSource),
+      )
+    }
     {
       const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
       assert(
