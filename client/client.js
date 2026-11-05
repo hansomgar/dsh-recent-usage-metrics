@@ -2357,11 +2357,30 @@ window.__ModuleLoader__.load({
                       ? h(
                           'div',
                           { className: 'dsh-rum-row dsh-rum-live-row', role: 'row' },
-                          h('span', { className: 'dsh-rum-col', role: 'cell' }, ''),
                           h(
                             'span',
-                            { className: 'dsh-rum-col', role: 'cell', 'data-align': 'start' },
+                            { className: 'dsh-rum-col', role: 'cell' },
                             h('span', { className: 'dsh-rum-live-tag' }, t('drawerLive')),
+                          ),
+                          /*
+                           * The clock, not the word "streaming".
+                           *
+                           * The Statistics view prints a step's `step/start` time as soon as
+                           * the step exists, including while it is still running. Putting the
+                           * label in this column made the live row the only row in the table
+                           * without a time, so it could not be matched against the log at all.
+                           * The label still identifies the row — it just sits in the index
+                           * column, which is where a marker belongs.
+                           */
+                          h(
+                            'span',
+                            {
+                              className: 'dsh-rum-col',
+                              role: 'cell',
+                              'data-align': 'start',
+                              title: agoText(live.at, now, t),
+                            },
+                            clockText(live.at),
                           ),
                           h('span', { className: 'dsh-rum-col', role: 'cell' }, secondsText(live.ttftMs, t)),
                           h(

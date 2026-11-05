@@ -1556,6 +1556,40 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         /call\.args\?\.chunks/.test(source) &&
         /snapshot\.legacy\.runningCalls/.test(source),
     )
+
+    /*
+     * The live row's time column shows a clock, not the word "streaming".
+     *
+     * The Statistics view prints a step's `step/start` time as soon as the step exists, so
+     * the live row is comparable against it only if it prints the same kind of value. The
+     * label still marks the row, in the index column.
+     */
+    {
+      const hasClass = (name) => (el) => String(el.props.className ?? '').includes(name)
+      const pill = findAll(writingTree, hasClass('dsh-rum-trigger'))[0]
+      assert('the pill is rendered while a step streams', pill !== undefined)
+      pill.props.onClick({ stopPropagation() {}, preventDefault() {} })
+      const tree2 = await runtime.render(status.component, writingProps)
+      const liveRow = findAll(tree2, hasClass('dsh-rum-live-row'))[0]
+      assert('the drawer renders a live row', liveRow !== undefined)
+      if (liveRow !== undefined) {
+        const cells = findAll(liveRow, (el) => String(el.props.className ?? '').includes('dsh-rum-col'))
+        assert('the live row has a cell for every column', cells.length === 7)
+        /*
+         * Cell 1 is the clock and must read `HH:MM:SS`; cell 0 carries the "streaming"
+         * marker, which is where a row marker belongs.
+         */
+        const clockCell = normalize(textOf(cells[1]))
+        assert(
+          'the live row prints a clock in its time column',
+          /^\d{2}:\d{2}:\d{2}$/.test(clockCell),
+        )
+        assert(
+          'the live row marks itself in the index column instead',
+          normalize(textOf(cells[0])).length > 0 && !/^\d+$/.test(normalize(textOf(cells[0]))),
+        )
+      }
+    }
   }
 
   /*
