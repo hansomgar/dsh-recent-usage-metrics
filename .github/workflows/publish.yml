@@ -28,12 +28,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # npm 11.5.1+ and Node 22.14+ are required for trusted publishing.
-          node-version: '22.14.0'
+          # Node 22.14+ is the floor for OIDC trusted publishing, but `npm@latest` also
+          # enforces its own engines field: npm 12 wants Node ^22.22.2 || ^24.15 || >=26.
+          # Pinning a Node that satisfies both keeps the install from failing on EBADENGINE.
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Use a recent npm
-        run: npm install -g npm@latest
+        # Trusted publishing needs npm 11.5.1 or newer; Node 24 already ships one, so this is
+        # a floor rather than an upgrade attempt that could outrun the runtime.
+        run: npm install -g npm@^11.5.1
 
       - name: Show the version being published
         run: node -e "console.log('publishing', require('./package.json').name + '@' + require('./package.json').version)"
