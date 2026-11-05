@@ -1517,23 +1517,36 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    function useLiveReading(useChat, enabled, trajectory) {
+    function useLiveReading(useChat, enabled, trajectory, runningStatsStep) {
       const partial = useChat((snapshot) => snapshot.legacy.partial)
       const nodes = useChat((snapshot) => snapshot.legacy.nodes)
       const turnTimings = useChat((snapshot) => snapshot.legacy.turnTimings)
       const runningCalls = useChat((snapshot) => snapshot.legacy.runningCalls)
 
       /*
-       * A step is live from `step/start`, not from its first visible block. The Trajectory
-       * domain reports that step immediately; `legacy.partial` is the fallback for a
-       * composition without it.
+       * A step is live from `step/start`, not from its first visible block.
+       *
+       * Three sources, tightest first:
+       * 1. The statistics fold's own `running` step. It is fed by the same durable log the
+       *    Statistics view renders, so it appears at once and never disagrees with the rows.
+       * 2. The Trajectory domain's running request — authoritative when present, but it lags
+       *    a fold that has already seen `step/start`.
+       * 3. `legacy.partial`, which only exists once the step has visible content.
+       *
+       * Reading the statistics first is what keeps the live row and the numbered rows from
+       * disagreeing: a step the fold calls running is excluded from the list by key, and the
+       * live row reports it. When the live step came only from a lagging source, the running
+       * step still appeared in the list and took `#1` while the live row was empty.
        */
       const request = runningRequestOf(trajectory)
-      const liveStep = request === undefined
-        ? partial === null || partial === undefined
-          ? null
-          : { turn: partial.turn, step: partial.step }
-        : { turn: request.turn, step: request.step }
+      const liveStep =
+        runningStatsStep !== null && runningStatsStep !== undefined
+          ? { turn: runningStatsStep.turn, step: runningStatsStep.step }
+          : request === undefined
+            ? partial === null || partial === undefined
+              ? null
+              : { turn: partial.turn, step: partial.step }
+            : { turn: request.turn, step: request.step }
       const running = enabled && liveStep !== null
       const [now, setNow] = useState(() => Date.now())
       const observation = useRef({ key: null, firstTokenAt: null })
@@ -1578,11 +1591,17 @@ window.__ModuleLoader__.load({
       if (!running) return null
 
       /*
-       * The step's origin: the Trajectory domain's own `startedAt` (exact, present from
-       * `step/start`), else the tool-result reconstruction, else the turn's start.
+       * The step's origin, tightest source first:
+       * 1. The statistics fold's `startTime` — the `step/start` event time itself, exact and
+       *    the very figure the Statistics view prints.
+       * 2. The Trajectory domain's `startedAt`, also from `step/start`, but a publication can
+       *    lag the fold.
+       * 3. Reconstruction from the previous step's last tool result, then the turn's start.
        */
       const start =
-        numberOrNull(request?.startedAt) ?? stepStartOf(liveStep, nodes, turnTimings)
+        numberOrNull(runningStatsStep?.metrics?.startTime) ??
+        numberOrNull(request?.startedAt) ??
+        stepStartOf(liveStep, nodes, turnTimings)
       const key = `${liveStep.turn}:${liveStep.step}`
       const firstTokenAt = observation.current.firstTokenAt
       /*
@@ -1933,8 +1952,25 @@ window.__ModuleLoader__.load({
         setStatsSnapshot(statsRead())
         return statsSubscribe(() => setStatsSnapshot(statsRead()))
       }, [statsRead, statsSubscribe])
+      /*
+       * The step the statistics fold currently calls running, if any.
+       *
+       * Computed before the live reading because that reading prefers it: the fold is fed by
+       * the durable log and sees `step/start` at once, while the Trajectory domain's request
+       * list can still be a publication behind. When the live step came only from the slower
+       * source, the running step stayed in the numbered list and took `#1` while the live row
+       * was empty — the same request reported twice, once with no figures.
+       */
+      const runningStatsStep = useMemo(() => {
+        if (statsSnapshot === undefined) return null
+        const steps = statsSteps(statsSnapshot)
+        for (let index = steps.length - 1; index >= 0; index -= 1) {
+          if (steps[index].metrics.running === true) return steps[index]
+        }
+        return null
+      }, [statsSnapshot])
       const chatNodes = useChat((snapshot) => snapshot.legacy.nodes)
-      const live = useLiveReading(useChat, geek, trajectory)
+      const live = useLiveReading(useChat, geek, trajectory, runningStatsStep)
 
       const triggerRef = useRef(null)
       const drawerRef = useRef(null)
@@ -2028,6 +2064,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         replaceRows(geek ? derivedRows : [])
       }, [geek, derivedRows, replaceRows])
+
 
       /* Mount / enter / leave for the drawer's slide-up transition. */
       useEffect(() => {

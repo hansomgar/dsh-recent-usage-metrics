@@ -1885,8 +1885,17 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         })
         statusTree = await runtime.render(status.component, statusProps)
         assert(
-          'a running step that has produced output is listed',
-          modelRows().length === 1 && modelRows()[0].key === '2:0' && modelRows()[0].tokens === 400,
+          'a running step is reported by the live row, not as a numbered row',
+          /*
+           * The live row is fed by the same fold, so a step the fold calls running is shown
+           * there and excluded from the list by key. Letting it into the list as well listed
+           * one request twice: an empty-looking `#1` beside a live row for the same step.
+           */
+          modelRows().length === 0,
+        )
+        assert(
+          'the statistics source drives the live row rather than a lagging domain',
+          /runningStatsStep !== null && runningStatsStep !== undefined/.test(source),
         )
       }
 
@@ -1900,8 +1909,8 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       {
         const before = modelRows()[0]
         assert(
-          'the running row already carries the figures it has',
-          before.tokens === 400 && before.totalMs === null,
+          'the running step has no numbered row to begin with',
+          before === undefined,
         )
         statsSnapshot = { turns: [] }
         addStatsStep(2, 0, {
@@ -1918,12 +1927,13 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         statusTree = await runtime.render(status.component, statusProps)
         const after = modelRows()[0]
         assert(
-          'settling in place refreshes the row it replaces',
+          'settling in place gives the step its numbered row',
           /*
-           * Key and first-token time are unchanged, so this is the case a comparison limited
-           * to those two fields would drop — leaving the drawer without a total.
+           * Key and first-token time are the same values the running step already had, so a
+           * comparison limited to those two fields would treat this as unchanged and leave
+           * the drawer empty.
            */
-          after.tokens === 400 && Math.round(after.totalMs) === 5000,
+          after !== undefined && after.tokens === 400 && Math.round(after.totalMs) === 5000,
         )
         assert(
           'the comparison that decides "unchanged" covers every rendered figure',
