@@ -2,6 +2,14 @@
   "name": "dsh-recent-usage-metrics",
   "version": "0.2.1",
   "description": "Geek level for the Performance & usage setting: a live reading of the newest request (first-token latency, speed, tokens, total, amortised) plus a drawer listing the last ten, all derived from the shipped Statistics view data",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hansomgar/dsh-recent-usage-metrics.git"
+  },
+  "homepage": "https://github.com/hansomgar/dsh-recent-usage-metrics#readme",
+  "bugs": {
+    "url": "https://github.com/hansomgar/dsh-recent-usage-metrics/issues"
+  },
   "type": "module",
   "license": "MIT",
   "main": "./lib/index.js",
