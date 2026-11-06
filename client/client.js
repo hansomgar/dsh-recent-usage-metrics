@@ -1172,72 +1172,31 @@ window.__ModuleLoader__.load({
     /**
      * Which model answered each step, keyed `turn:step`.
      *
-     * The fold puts no provider/model on a step — `stepMetrics` carries only derived figures and
-     * has no `startSeq` either — so the model is read from the turn's `request-header` event
-     * rows, one per routed request.
+     * Read from the Trajectory domain's assistant nodes, which carry `providerMetadata` copied
+     * straight from `assistant/message.source`. That is the only per-step source of truth the
+     * client half can reach:
      *
-     * Two things make a naive "newest header before the step started" rule wrong:
+     * - The statistics fold puts no provider/model on a step, and its `request-header` rows are
+     *   written only when the routed model or tool set CHANGES — 24 of them for 3139 requests in
+     *   a real session, so they describe about 1% of steps and mislabel the rest.
+     * - The Chat snapshot's assistant nodes drop the source entirely.
      *
-     * 1. A header is written a few milliseconds AFTER its own `step/start` (measured: 4 ms), so
-     *    `header.time <= step.startTime` misses the header that belongs to this request and
-     *    falls back to the PREVIOUS request's model. That showed the wrong provider on the first
-     *    step after a model switch.
-     * 2. Not every step issues a new header: consecutive steps reuse the routed model, and then
-     *    the newest earlier header is the correct answer.
-     *
-     * So the window is tried first — every header from this step up to the next step's start —
-     * and the newest earlier header is the fallback. Measured against `assistant/message.source`
-     * on a real 3119-step log: the time-only rule matched 99.8%, this one matches 100%.
-     *
-     * `model/selection` is deliberately not used: it records what the user PICKED and can precede
-     * the request that actually carries it, so it would name a model that was not called.
+     * A compaction is not covered here: it has its own `compaction.model`.
      */
-    function modelIndexFromStats(statsSnapshot) {
-      const turns = statsSnapshot?.turns
+    function modelIndexFromTrajectory(trajectorySnapshot) {
       const index = new Map()
-      if (!Array.isArray(turns)) return index
-      for (const turn of turns) {
-        if (!Array.isArray(turn.steps)) continue
-        const headers = []
-        if (Array.isArray(turn.events)) {
-          for (const event of turn.events) {
-            if (event?.kind !== 'request-header') continue
-            const at = numberOrNull(event.time)
-            if (at === null) continue
-            if (typeof event.model !== 'string' && typeof event.provider !== 'string') continue
-            headers.push({ time: at, provider: event.provider ?? null, model: event.model ?? null })
-          }
-          headers.sort((left, right) => left.time - right.time)
-        }
-        if (headers.length === 0) continue
-
-        const starts = []
-        for (const step of turn.steps) {
-          const at = numberOrNull(step.startTime)
-          if (at === null || typeof step.step !== 'number') continue
-          starts.push({ at, step: step.step })
-        }
-        if (starts.length === 0) continue
-        starts.sort((left, right) => left.at - right.at)
-
-        for (let i = 0; i < starts.length; i += 1) {
-          const from = starts[i].at
-          const until = i + 1 < starts.length ? starts[i + 1].at : Number.POSITIVE_INFINITY
-          let chosen = null
-          for (const header of headers) {
-            if (header.time < from) continue
-            if (header.time >= until) break
-            chosen = header
-          }
-          if (chosen === null) {
-            for (const header of headers) {
-              if (header.time < from) chosen = header
-              else break
-            }
-          }
-          if (chosen === null) continue
-          index.set(`${turn.turn}:${starts[i].step}`, chosen)
-        }
+      const nodes = trajectorySnapshot?.eventNodes
+      if (!Array.isArray(nodes)) return index
+      for (const node of nodes) {
+        if (node === null || typeof node !== 'object') continue
+        if (node.kind !== 'assistant') continue
+        const meta = node.providerMetadata
+        if (meta === null || typeof meta !== 'object') continue
+        const model = typeof meta.model === 'string' && meta.model !== '' ? meta.model : null
+        const provider = typeof meta.provider === 'string' && meta.provider !== '' ? meta.provider : null
+        if (model === null && provider === null) continue
+        if (typeof node.turn !== 'number' || typeof node.step !== 'number') continue
+        index.set(`${node.turn}:${node.step}`, { provider, model })
       }
       return index
     }
@@ -1295,9 +1254,8 @@ window.__ModuleLoader__.load({
      * *after* selection: capping here at ten and then dropping the live step left the drawer
      * showing nine rows for as long as a request was streaming.
      */
-    function historyFromStats(statsSnapshot) {
+    function historyFromStats(statsSnapshot, models) {
       const steps = statsSteps(statsSnapshot)
-      const models = modelIndexFromStats(statsSnapshot)
       const rows = []
       for (const entry of steps) {
         // A step only has a row once it has started; `step/start` is what supplies this.
@@ -1305,7 +1263,7 @@ window.__ModuleLoader__.load({
         if (!statsStepHasFigures(entry.metrics)) continue
         const row = readingOfStatsStep(entry)
         // Attribute the request to the model that served it, for the speed column's tooltip.
-        const owner = models.get(row.key)
+        const owner = models === undefined ? undefined : models.get(row.key)
         if (owner !== undefined) {
           row.model = owner.model
           row.provider = owner.provider
@@ -2999,8 +2957,11 @@ window.__ModuleLoader__.load({
        * what made the drawer lag the log.
        */
       const statsRows = useMemo(
-        () => (sessionStats === undefined ? undefined : historyFromStats(sessionStats)),
-        [sessionStats],
+        () =>
+          sessionStats === undefined
+            ? undefined
+            : historyFromStats(sessionStats, modelIndexFromTrajectory(trajectory)),
+        [sessionStats, trajectory],
       )
       /*
        * Fallback for a composition without the statistics target: derive rows from the Chat

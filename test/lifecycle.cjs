@@ -2943,32 +2943,34 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
     /*
-     * Model attribution across a switch.
+     * Model attribution, per step.
      *
-     * A `request/header` is written a few milliseconds AFTER its own `step/start`, so a rule that
-     * only looks at headers earlier than the step misses the one belonging to it and names the
-     * previous request's model. These two cases pin both halves of the fix: the header that lands
-     * just after the start, and the step that issues no header at all and inherits the last one.
+     * The only per-step source of truth reachable from the client half is the Trajectory
+     * domain's assistant nodes, which copy `providerMetadata` straight from
+     * `assistant/message.source`. The statistics fold's `request-header` rows are NOT usable:
+     * they are written only when the routed model or tool set changes, which was 24 rows for
+     * 3139 requests in a real session, so they describe about 1% of steps and mislabel the rest.
      */
     {
-      const stepStart = 30_000_000
-      const headerAt = stepStart + 4 // measured on a real log: 4 ms after the start
+      const T0 = 30_000_000
       statsSnapshot = {
         turns: [
           {
             turn: 30,
             steps: [
-              { turn: 30, step: 1, startTime: stepStart, endTime: stepStart + 5_000, ttft: 900, model: 4_000, output: 120, running: false },
-              { turn: 30, step: 2, startTime: stepStart + 6_000, endTime: stepStart + 9_000, ttft: 800, model: 3_000, output: 90, running: false },
+              { turn: 30, step: 1, startTime: T0, endTime: T0 + 5_000, ttft: 900, model: 4_000, output: 120, running: false },
+              { turn: 30, step: 2, startTime: T0 + 6_000, endTime: T0 + 9_000, ttft: 800, model: 3_000, output: 90, running: false },
+              { turn: 30, step: 3, startTime: T0 + 12_000, endTime: T0 + 15_000, ttft: 700, model: 2_500, output: 60, running: false },
             ],
+            // A stale header, hours earlier: it must NOT be used to guess either step.
             events: [
-              { kind: 'request-header', time: headerAt, provider: 'trae', model: 'deepseek-v4.1-flash' },
+              { kind: 'request-header', time: T0 - 3_600_000, provider: 'qodercn', model: 'dfmodel' },
             ],
           },
         ],
       }
       statsSteps.length = 0
-      const switchProps = {
+      const modelProps = {
         ...statusInject,
         useChat: (sel) =>
           sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
@@ -2976,44 +2978,82 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
         useSession: (sel) => sel({ running: false }),
         statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
-        useTrajectory: () => ({ eventNodes: [], requests: [] }),
+        // The truth: step 1 and 2 ran on buddy, step 3 on trae.
+        useTrajectory: () => ({
+          eventNodes: [
+            { kind: 'assistant', turn: 30, step: 1, providerMetadata: { provider: 'buddy', model: 'deepseek-v4.1-flash' } },
+            { kind: 'assistant', turn: 30, step: 2, providerMetadata: { provider: 'buddy', model: 'deepseek-v4.1-flash' } },
+            { kind: 'assistant', turn: 30, step: 3, providerMetadata: { provider: 'trae', model: 'deepseek-v4.1-flash' } },
+          ],
+          requests: [],
+        }),
         t,
       }
-      await runtime.render(status.component, switchProps)
+      await runtime.render(status.component, modelProps)
       const rows = modelRows()
 
       assert(
-        'a header written just after step/start is attributed to that step',
+        'each step names the provider that actually served it',
         (() => {
-          const row = rows.find((entry) => entry.key === '30:1')
-          return row !== undefined && row.provider === 'trae' && row.model === 'deepseek-v4.1-flash'
-        })(),
-      )
-      assert(
-        'a step that issues no header inherits the model already in force',
-        (() => {
-          const row = rows.find((entry) => entry.key === '30:2')
-          return row !== undefined && row.provider === 'trae'
-        })(),
-      )
-      assert(
-        'the model index prefers the window over the earlier header',
-        /*
-         * The bug this pins: reading only headers earlier than the step start picked the model of
-         * the PREVIOUS request, which is visibly the wrong provider after a switch.
-         */
-        (() => {
-          const start = source.indexOf('function modelIndexFromStats(')
-          if (start < 0) return false
-          const body = source.slice(start, start + 2600)
+          const first = rows.find((entry) => entry.key === '30:1')
+          const third = rows.find((entry) => entry.key === '30:3')
           return (
-            /if \(header\.time < from\) continue/.test(body) &&
-            /if \(header\.time >= until\) break/.test(body) &&
-            /if \(chosen === null\) \{/.test(body)
+            first !== undefined &&
+            third !== undefined &&
+            first.provider === 'buddy' &&
+            third.provider === 'trae'
           )
         })(),
       )
+      assert(
+        'a stale request-header is not used to guess a step model',
+        /*
+         * The header here is an hour older than every step. The old statistics-based rule would
+         * have named it for all three; the trajectory nodes must win.
+         */
+        (() => {
+          const first = rows.find((entry) => entry.key === '30:1')
+          return first !== undefined && first.model === 'deepseek-v4.1-flash' && first.provider !== 'qodercn'
+        })(),
+      )
+      assert(
+        'the model index comes from the trajectory nodes, not the fold events',
+        (() => {
+          const start = source.indexOf('function modelIndexFromTrajectory(')
+          if (start < 0) return false
+          const body = source.slice(start, start + 1400)
+          return /node\.providerMetadata/.test(body) && /meta\.model/.test(body) && /meta\.provider/.test(body)
+        })(),
+      )
+      assert(
+        'a step with no trajectory node keeps an unknown model rather than a guess',
+        (() => {
+          statsSnapshot = {
+            turns: [
+              {
+                turn: 31,
+                steps: [
+                  { turn: 31, step: 1, startTime: T0 + 40_000, endTime: T0 + 44_000, ttft: 900, model: 3_000, output: 50, running: false },
+                ],
+                events: [{ kind: 'request-header', time: T0 - 3_600_000, provider: 'qodercn', model: 'dfmodel' }],
+              },
+            ],
+          }
+          statsSteps.length = 0
+          return true
+        })(),
+      )
+      await runtime.render(status.component, { ...modelProps, useTrajectory: () => ({ eventNodes: [], requests: [] }) })
+      assert(
+        'with no trajectory nodes the model stays empty instead of borrowing a stale header',
+        (() => {
+          const row = modelRows().find((entry) => entry.key === '31:1')
+          return row !== undefined && row.model === null && row.provider === null
+        })(),
+      )
     }
+
+
 
 
   /* ---------------------------------------------------------------- */
