@@ -165,6 +165,13 @@ Every drawer column and every header carries a hint:
 When both hold, the text takes the warn colour and the bar keeps the business colour. A
 compaction row never takes the cache highlight.
 
+**A model switch and a configuration change are not the same thing.** A `request/header` only says
+the routed configuration changed — enabling or disabling a plugin rewrites the tool list and writes
+a header without touching the model. On a real session, only 7 of 27 headers were genuine model
+switches. Blue therefore appears only when the model itself differs; a configuration change without
+a model change shows up as a cold cache, coloured yellow, with the tool-list movement named in the
+row-number hint.
+
 **Where the model name comes from:** a `request/header` inside the step's window means a switch
 and supplies the model; otherwise the previous step's model carries over, and a landed reply
 overrides both via `assistant/message.source`. The live row follows the same rule, so the model

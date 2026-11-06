@@ -3231,6 +3231,126 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     }
 
 
+
+    /*
+     * Telling a model switch apart from a configuration change.
+     *
+     * A `request/header` proves only that the routed configuration changed. Enabling or disabling
+     * a plugin rewrites the tool list, which changes the request prefix and drops the provider's
+     * cache, without touching the model — and on a real session that accounted for 18 of 29
+     * headers. Reporting those as "switched model" was wrong, and the user caught it.
+     */
+    {
+      const T = 60_000_000
+      statsSnapshot = {
+        turns: [
+          {
+            turn: 60,
+            steps: [
+              // 1: no header, model settled by its reply.
+              { turn: 60, step: 1, startTime: T, endTime: T + 5_000, ttft: 800, model: 4_000, output: 100, running: false, cacheRead: 99_000, context: 100_000, cacheHit: 0.99 },
+              // 2: header with the SAME model -> configuration change, not a switch.
+              { turn: 60, step: 2, startTime: T + 6_000, endTime: T + 9_000, ttft: 700, model: 2_800, output: 80, running: false, cacheRead: 400, context: 100_000, cacheHit: 0.004 },
+              // 3: header with a DIFFERENT model -> a real switch.
+              { turn: 60, step: 3, startTime: T + 12_000, endTime: T + 15_000, ttft: 600, model: 2_600, output: 60, running: false, cacheRead: 99_500, context: 100_000, cacheHit: 0.995 },
+              // 4: no header, inherits step 3's model.
+              { turn: 60, step: 4, startTime: T + 18_000, endTime: T + 21_000, ttft: 500, model: 2_400, output: 40, running: false, cacheRead: 99_600, context: 100_000, cacheHit: 0.996 },
+            ],
+            events: [
+              { kind: 'request-header', time: T + 6_004, provider: 'buddy', model: 'deepseek-v4.1-flash', toolCount: 66 },
+              { kind: 'request-header', time: T + 12_004, provider: 'trae', model: 'deepseek-v4.1-flash', toolCount: 65 },
+            ],
+          },
+        ],
+      }
+      statsSteps.length = 0
+      const planProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: false }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        useTrajectory: () => ({
+          eventNodes: [
+            { kind: 'assistant', turn: 60, step: 1, providerMetadata: { provider: 'buddy', model: 'deepseek-v4.1-flash' } },
+            { kind: 'assistant', turn: 60, step: 2, providerMetadata: { provider: 'buddy', model: 'deepseek-v4.1-flash' } },
+            { kind: 'assistant', turn: 60, step: 3, providerMetadata: { provider: 'trae', model: 'deepseek-v4.1-flash' } },
+            { kind: 'assistant', turn: 60, step: 4, providerMetadata: { provider: 'trae', model: 'deepseek-v4.1-flash' } },
+          ],
+          requests: [],
+        }),
+        t,
+      }
+      const planTree = await runtime.render(status.component, planProps)
+      const planRows = modelRows()
+      const row = (step) => planRows.find((entry) => entry.key === `60:${step}`)
+
+      assert(
+        'a header that keeps the same model is a configuration change, not a switch',
+        row(2) !== undefined && row(2).switched === false && row(2).configChanged === true,
+      )
+      assert(
+        'a header that changes the model is a switch',
+        row(3) !== undefined && row(3).switched === true && row(3).configChanged === false,
+      )
+      assert(
+        'the configuration change records both tool counts',
+        row(2) !== undefined && row(2).toolCount === 66,
+      )
+      assert(
+        'a step with no header is neither a switch nor a configuration change',
+        row(4) !== undefined && row(4).switched === false && row(4).configChanged === false,
+      )
+
+      // The row-number hint, evaluated on the same rows.
+      const build = (() => {
+        const start = source.indexOf('function rowHintLines(')
+        const end = source.indexOf('\n    /**', start)
+        if (start < 0 || end < 0) return null
+        const bodyText = source
+          .slice(start, end)
+          .replace('function rowHintLines(row, t)', 'return function (row, t)')
+        try {
+          return new Function('numberOrNull', 'isLowCacheHit', 'modelHintText', 'LOW_CACHE_HIT', bodyText)(
+            (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
+            (candidate) =>
+              typeof candidate.cacheHit === 'number' && candidate.cacheHit < 0.9,
+            () => 'stub-model',
+            0.9,
+          )
+        } catch {
+          return null
+        }
+      })()
+      const stubT = (key, params) => (params === undefined ? key : `${key} ${JSON.stringify(params)}`)
+      const configLines = build === null ? [] : build(row(2), stubT)
+      const switchLines = build === null ? [] : build(row(3), stubT)
+
+      console.log('    [dbg] row2 =', JSON.stringify({configChanged:row(2)?.configChanged, cacheHit:row(2)?.cacheHit, toolCount:row(2)?.toolCount, prev:row(2)?.previousToolCount}), '| lines =', JSON.stringify(configLines))
+      assert(
+        'a cold row that changed its configuration explains the change and the cold cache',
+        /*
+         * Step 2's predecessor issued no header, so only ONE tool count is known — the line says
+         * the configuration changed without inventing the other number. Both lines must appear:
+         * the cause first, then the measurement.
+         */
+        configLines.length === 2 &&
+          configLines[0] === 'rowConfigChangedUnknown' &&
+          configLines[1].startsWith('rowLowCache'),
+      )
+      assert(
+        'a switched row names the model instead',
+        switchLines.some((line) => line.startsWith('rowSwitched')),
+      )
+      assert(
+        'an ordinary row gets no hint at all',
+        build === null || build(row(4), stubT).length === 0,
+      )
+    }
+
+
     /*
      * Model switches and cold caches, and how a row shows them.
      *

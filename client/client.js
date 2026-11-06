@@ -122,6 +122,11 @@ window.__ModuleLoader__.load({
       hintIndexRows: '行号：1–10 为已完成的最近记录',
       hintIndexGlyphs: '{bolt} 为模型输出中，{tools} 为工具调用中，{compact} 为压缩上下文中',
       hintColour: '整行黄色表示缓存命中过低，蓝色表示这一步切换了模型',
+      /* The row-number hint: only a highlighted row carries one, and it says why in numbers. */
+      rowSwitched: '该行切换模型至：{model}',
+      rowLowCache: '缓存命中 {rate}，低于 {threshold}%',
+      rowConfigChanged: '该行请求配置变更（工具集 {from}→{to}）',
+      rowConfigChangedUnknown: '该行请求配置变更，缓存前缀失效',
       hintTime: '请求发出的时刻（本地时间）',
       hintTtft: '从发出到收到第一个 token 的耗时',
       hintSpeed: '模型生成速度 = 输出 token ÷ 解码时长',
@@ -186,6 +191,10 @@ window.__ModuleLoader__.load({
       hintIndexRows: 'Row number: 1–10 are the most recent finished records',
       hintIndexGlyphs: '{bolt} is a model reply, {tools} is a tool call, {compact} is a context compaction',
       hintColour: 'A yellow row means a low cache hit; a blue row means this step switched models',
+      rowSwitched: 'This row switched to {model}',
+      rowLowCache: 'Cache hit {rate}, below {threshold}%',
+      rowConfigChanged: 'Request configuration changed on this row (tools {from}→{to})',
+      rowConfigChangedUnknown: 'Request configuration changed on this row; the cached prefix was lost',
       hintTime: 'When the request was issued (local time)',
       hintTtft: 'Time from issuing the request to receiving its first token',
       hintSpeed: 'Generation speed = output tokens ÷ decode time',
@@ -1306,27 +1315,36 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Which model a step used, and whether that request changed models.
+     * Which model a step used, whether that request changed models, and whether it changed the
+     * routed configuration at all.
      *
-     * A `request/header` is written only when the routed model or tool set CHANGES, so its
-     * placement is itself the signal:
+     * A `request/header` is written when the routed configuration changes, and that includes far
+     * more than the model: enabling or disabling a plugin changes the tool list, which rewrites
+     * the request prefix and invalidates the provider's cache. Measured on a real session, 27
+     * headers covered only 7 genuine model switches, so "a header exists" is NOT "the model
+     * changed" — treating the two as one flagged every plugin toggle as a model switch.
      *
-     * - inside a step's own seq window (from its `step/start` to the next one) → this request
-     *   changed the routed configuration, and the header names the model it switched to;
-     * - absent → the step reused whatever was already routed, so it inherits the previous
-     *   step's model.
+     * The three signals are therefore separated:
      *
-     * Measured on a real 3202-step session: 22 steps carried a header and all 22 were genuine
-     * switches; 3180 inherited, of which every one with a known predecessor matched the model
-     * the reply later reported. The only gaps are a turn's first step with no header, where
-     * nothing earlier is known and the model stays null.
-     *
-     * A finished reply overrides both, because `assistant/message.source` is the authority.
+     * - `switched` — a header landed in the step's window AND the model differs from the one
+     *   before it. When the previous model is unknown the header is trusted, because there is
+     *   nothing to contradict it.
+     * - `configChanged` — a header landed in the window but the model did NOT change, so the
+     *   change was elsewhere in the configuration (the tool list). Its visible consequence is a
+     *   cold cache, which is why it is reported beside the low-cache highlight.
+     * - `toolCount` / `previousToolCount` — the tool-list sizes the two headers carried, so the
+     *   hint can say what actually moved rather than gesturing at "the configuration".
      */
     function modelPlanFromStats(statsSnapshot, known) {
       const plan = new Map()
       const turns = statsSnapshot?.turns
       if (!Array.isArray(turns)) return plan
+      /*
+       * The plan walks the session's steps in time order across turns, not turn by turn, because
+       * "the previous model" has to compare against the step before it even when that step lives
+       * in an earlier turn — a turn's first step is exactly where a switch is most likely.
+       */
+      const sequence = []
       for (const turn of turns) {
         if (!Array.isArray(turn.steps)) continue
         const headers = []
@@ -1336,61 +1354,97 @@ window.__ModuleLoader__.load({
             const at = numberOrNull(event.time)
             if (at === null) continue
             if (typeof event.model !== 'string' && typeof event.provider !== 'string') continue
-            headers.push({ time: at, provider: event.provider ?? null, model: event.model ?? null })
+            headers.push({
+              time: at,
+              provider: event.provider ?? null,
+              model: event.model ?? null,
+              tools: numberOrNull(event.toolCount),
+            })
           }
           headers.sort((left, right) => left.time - right.time)
         }
-        const starts = []
+        const steps = []
         for (const step of turn.steps) {
           const at = numberOrNull(step.startTime)
           if (at === null || typeof step.step !== 'number') continue
-          starts.push({ at, step: step.step })
+          steps.push({ at, step: step.step })
         }
-        if (starts.length === 0) continue
-        starts.sort((left, right) => left.at - right.at)
+        steps.sort((left, right) => left.at - right.at)
+        for (const step of steps) sequence.push({ turn: turn.turn, step: step.step, at: step.at, headers })
+      }
+      sequence.sort((left, right) => left.at - right.at)
+
+      /** The model of the step before this one, or null when it is not known. */
+      let previousModel = null
+      let previousTools = null
+      let inForce = null
+
+      for (let index = 0; index < sequence.length; index += 1) {
+        const entry = sequence[index]
+        const key = `${entry.turn}:${entry.step}`
+        const nextAt = index + 1 < sequence.length ? sequence[index + 1].at : Number.POSITIVE_INFINITY
+        let inside = null
+        for (const header of entry.headers) {
+          if (header.time < entry.at) continue
+          if (header.time >= nextAt) break
+          inside = header
+        }
+
+        const settled = known === undefined ? undefined : known.get(key)
+        const settledModel =
+          settled !== undefined && settled.model !== null
+            ? { provider: settled.provider, model: settled.model }
+            : null
+
+        if (inside !== null) {
+          const headerModel = { provider: inside.provider, model: inside.model }
+          const changed =
+            previousModel === null ||
+            headerModel.model === null ||
+            previousModel.model !== headerModel.model ||
+            previousModel.provider !== headerModel.provider
+          plan.set(key, {
+            provider: inside.provider,
+            model: inside.model,
+            /*
+             * A header alone proves only that the routed configuration changed. Saying "the model
+             * switched" additionally requires that the model itself differs — and when the
+             * previous model is unknown, the header is the only evidence, so it is trusted.
+             */
+            switched: changed,
+            configChanged: !changed,
+            toolCount: inside.tools,
+            previousToolCount: previousTools,
+            source: 'header',
+          })
+          inForce = headerModel
+          previousModel = headerModel
+          previousTools = inside.tools
+          continue
+        }
 
         /*
-         * The model currently in force, carried forward while the plan is built.
-         *
-         * A step whose header names a switch becomes the new carrier, so the step AFTER it
-         * inherits the switched-to model — not the one before the switch, which `known` alone
-         * would give.
+         * No header: the step reused what was already routed. A finished reply outranks the
+         * carried model, because `assistant/message.source` is the authority for a settled step.
          */
-        let inForce = null
-
-        for (let i = 0; i < starts.length; i += 1) {
-          const key = `${turn.turn}:${starts[i].step}`
-          const from = starts[i].at
-          const until = i + 1 < starts.length ? starts[i + 1].at : Number.POSITIVE_INFINITY
-          let inside = null
-          for (const header of headers) {
-            if (header.time < from) continue
-            if (header.time >= until) break
-            inside = header
-          }
-          if (inside !== null) {
-            // The header was written for THIS request, so the model changed here.
-            inForce = { provider: inside.provider, model: inside.model }
-            plan.set(key, { provider: inside.provider, model: inside.model, switched: true, source: 'header' })
-            continue
-          }
-          /*
-           * No header: inherit. A finished reply outranks the carried model, because
-           * `assistant/message.source` is the authority for a step that has settled.
-           */
-          const settled = known === undefined ? undefined : known.get(key)
-          if (settled !== undefined && settled.model !== null) {
-            inForce = { provider: settled.provider, model: settled.model }
-            plan.set(key, { provider: settled.provider, model: settled.model, switched: false, source: 'reply' })
-            continue
-          }
-          if (inForce !== null) {
-            plan.set(key, { provider: inForce.provider, model: inForce.model, switched: false, source: 'inherit' })
-          }
+        const resolved = settledModel ?? inForce
+        if (resolved !== null) {
+          plan.set(key, {
+            provider: resolved.provider,
+            model: resolved.model,
+            switched: false,
+            configChanged: false,
+            toolCount: null,
+            previousToolCount: null,
+            source: settledModel !== null ? 'reply' : 'inherit',
+          })
+          inForce = resolved
+          previousModel = resolved
         }
       }
       return plan
     }
+
 
     /**
      * Whether any step started after this compaction finished.
@@ -1464,6 +1518,14 @@ window.__ModuleLoader__.load({
           row.model = owner.model
           row.provider = owner.provider
           row.switched = owner.switched === true
+          /*
+           * A configuration change that was not a model switch still rewrote the request prefix,
+           * so it is worth naming when the cache came back cold: that is the difference between
+           * "the account changed" and "the tool list moved".
+           */
+          row.configChanged = owner.configChanged === true
+          row.toolCount = owner.toolCount ?? null
+          row.previousToolCount = owner.previousToolCount ?? null
         }
         rows.push(row)
       }
@@ -1882,6 +1944,47 @@ window.__ModuleLoader__.load({
         `${pad(date.getHours(), 2)}:${pad(date.getMinutes(), 2)}:${pad(date.getSeconds(), 2)}.` +
         `${pad(date.getMilliseconds(), 3)}`
       )
+    }
+
+    /**
+     * The row-number hint, or an empty list when the row is not highlighted.
+     *
+     * A highlighted row is worth explaining, and the number column is the one place that has room
+     * without competing with a figure. Two independent reasons can apply, so the result is a list
+     * of lines rather than a sentence:
+     *
+     * - the model switched, named outright;
+     * - the cache came back cold, with the rate and the threshold it fell below.
+     *
+     * A cold row that ALSO changed its routed configuration names the tool-list movement, because
+     * that is the usual cause of a lost prefix and the difference between "the account rotated"
+     * and "a plugin was enabled". When the two tool counts are not both known, the line says only
+     * that the configuration changed rather than inventing numbers.
+     */
+    function rowHintLines(row, t) {
+      const lines = []
+      if (row.compaction === true) return lines
+      if (row.switched === true) {
+        lines.push(t('rowSwitched', { model: modelHintText(row, t) }))
+      }
+      if (isLowCacheHit(row)) {
+        if (row.configChanged === true) {
+          const from = numberOrNull(row.previousToolCount)
+          const to = numberOrNull(row.toolCount)
+          lines.push(
+            from !== null && to !== null
+              ? t('rowConfigChanged', { from, to })
+              : t('rowConfigChangedUnknown'),
+          )
+        }
+        lines.push(
+          t('rowLowCache', {
+            rate: `${(row.cacheHit * 100).toFixed(1)}%`,
+            threshold: Math.round(LOW_CACHE_HIT * 100),
+          }),
+        )
+      }
+      return lines
     }
 
     /**
@@ -3972,7 +4075,33 @@ window.__ModuleLoader__.load({
                          */
                         h(
                           'span',
-                          { className: 'dsh-rum-index', role: 'cell' },
+                          {
+                            className: 'dsh-rum-index',
+                            role: 'cell',
+                            /*
+                             * Only a highlighted row explains itself here; an ordinary row's number
+                             * needs no gloss. The handler is attached unconditionally but returns
+                             * nothing to show when the list is empty, so hovering a plain row stays
+                             * silent.
+                             */
+                            onMouseEnter: (event) => {
+                              const lines = rowHintLines(entry.row, t)
+                              if (lines.length === 0) return
+                              hint.show(
+                                lines.length === 1
+                                  ? lines[0]
+                                  : h(
+                                      'span',
+                                      { className: 'dsh-rum-tip-body' },
+                                      ...lines.map((line, index) =>
+                                        h('span', { className: 'dsh-rum-tip-line' }, line),
+                                      ),
+                                    ),
+                                event,
+                              )
+                            },
+                            onMouseLeave: hint.hide,
+                          },
                           entry.row.compaction === true
                             ? h(CompactionIcon, {
                                 className:
