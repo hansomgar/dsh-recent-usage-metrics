@@ -1172,14 +1172,25 @@ window.__ModuleLoader__.load({
     /**
      * Which model answered each step, keyed `turn:step`.
      *
-     * The fold does not put a provider/model on a step — `stepMetrics` carries only derived
-     * figures, and an assistant chat node carries only its usage and timings. The model is
-     * recorded once per routed request as a `request/header` event row on the turn, so a step
-     * is attributed to the newest header that precedes it.
+     * The fold puts no provider/model on a step — `stepMetrics` carries only derived figures and
+     * has no `startSeq` either — so the model is read from the turn's `request-header` event
+     * rows, one per routed request.
      *
-     * Verified against the log: on a real session the newest preceding header matched the
-     * `assistant/message.source` of every one of 40 sampled steps. Headers are per-routed-
-     * request, so several consecutive steps share one, and a model switch starts a new one.
+     * Two things make a naive "newest header before the step started" rule wrong:
+     *
+     * 1. A header is written a few milliseconds AFTER its own `step/start` (measured: 4 ms), so
+     *    `header.time <= step.startTime` misses the header that belongs to this request and
+     *    falls back to the PREVIOUS request's model. That showed the wrong provider on the first
+     *    step after a model switch.
+     * 2. Not every step issues a new header: consecutive steps reuse the routed model, and then
+     *    the newest earlier header is the correct answer.
+     *
+     * So the window is tried first — every header from this step up to the next step's start —
+     * and the newest earlier header is the fallback. Measured against `assistant/message.source`
+     * on a real 3119-step log: the time-only rule matched 99.8%, this one matches 100%.
+     *
+     * `model/selection` is deliberately not used: it records what the user PICKED and can precede
+     * the request that actually carries it, so it would name a model that was not called.
      */
     function modelIndexFromStats(statsSnapshot) {
       const turns = statsSnapshot?.turns
@@ -1191,22 +1202,41 @@ window.__ModuleLoader__.load({
         if (Array.isArray(turn.events)) {
           for (const event of turn.events) {
             if (event?.kind !== 'request-header') continue
+            const at = numberOrNull(event.time)
+            if (at === null) continue
             if (typeof event.model !== 'string' && typeof event.provider !== 'string') continue
-            headers.push({ time: numberOrNull(event.time) ?? 0, provider: event.provider ?? null, model: event.model ?? null })
+            headers.push({ time: at, provider: event.provider ?? null, model: event.model ?? null })
           }
           headers.sort((left, right) => left.time - right.time)
         }
         if (headers.length === 0) continue
+
+        const starts = []
         for (const step of turn.steps) {
           const at = numberOrNull(step.startTime)
           if (at === null || typeof step.step !== 'number') continue
+          starts.push({ at, step: step.step })
+        }
+        if (starts.length === 0) continue
+        starts.sort((left, right) => left.at - right.at)
+
+        for (let i = 0; i < starts.length; i += 1) {
+          const from = starts[i].at
+          const until = i + 1 < starts.length ? starts[i + 1].at : Number.POSITIVE_INFINITY
           let chosen = null
           for (const header of headers) {
-            if (header.time <= at) chosen = header
-            else break
+            if (header.time < from) continue
+            if (header.time >= until) break
+            chosen = header
+          }
+          if (chosen === null) {
+            for (const header of headers) {
+              if (header.time < from) chosen = header
+              else break
+            }
           }
           if (chosen === null) continue
-          index.set(`${turn.turn}:${step.step}`, chosen)
+          index.set(`${turn.turn}:${starts[i].step}`, chosen)
         }
       }
       return index

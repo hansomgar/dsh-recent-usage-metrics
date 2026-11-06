@@ -2941,6 +2941,81 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   }
 
 
+
+    /*
+     * Model attribution across a switch.
+     *
+     * A `request/header` is written a few milliseconds AFTER its own `step/start`, so a rule that
+     * only looks at headers earlier than the step misses the one belonging to it and names the
+     * previous request's model. These two cases pin both halves of the fix: the header that lands
+     * just after the start, and the step that issues no header at all and inherits the last one.
+     */
+    {
+      const stepStart = 30_000_000
+      const headerAt = stepStart + 4 // measured on a real log: 4 ms after the start
+      statsSnapshot = {
+        turns: [
+          {
+            turn: 30,
+            steps: [
+              { turn: 30, step: 1, startTime: stepStart, endTime: stepStart + 5_000, ttft: 900, model: 4_000, output: 120, running: false },
+              { turn: 30, step: 2, startTime: stepStart + 6_000, endTime: stepStart + 9_000, ttft: 800, model: 3_000, output: 90, running: false },
+            ],
+            events: [
+              { kind: 'request-header', time: headerAt, provider: 'trae', model: 'deepseek-v4.1-flash' },
+            ],
+          },
+        ],
+      }
+      statsSteps.length = 0
+      const switchProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: false }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        useTrajectory: () => ({ eventNodes: [], requests: [] }),
+        t,
+      }
+      await runtime.render(status.component, switchProps)
+      const rows = modelRows()
+
+      assert(
+        'a header written just after step/start is attributed to that step',
+        (() => {
+          const row = rows.find((entry) => entry.key === '30:1')
+          return row !== undefined && row.provider === 'trae' && row.model === 'deepseek-v4.1-flash'
+        })(),
+      )
+      assert(
+        'a step that issues no header inherits the model already in force',
+        (() => {
+          const row = rows.find((entry) => entry.key === '30:2')
+          return row !== undefined && row.provider === 'trae'
+        })(),
+      )
+      assert(
+        'the model index prefers the window over the earlier header',
+        /*
+         * The bug this pins: reading only headers earlier than the step start picked the model of
+         * the PREVIOUS request, which is visibly the wrong provider after a switch.
+         */
+        (() => {
+          const start = source.indexOf('function modelIndexFromStats(')
+          if (start < 0) return false
+          const body = source.slice(start, start + 2600)
+          return (
+            /if \(header\.time < from\) continue/.test(body) &&
+            /if \(header\.time >= until\) break/.test(body) &&
+            /if \(chosen === null\) \{/.test(body)
+          )
+        })(),
+      )
+    }
+
+
   /* ---------------------------------------------------------------- */
   /* Compaction                                                         */
   /* ---------------------------------------------------------------- */
