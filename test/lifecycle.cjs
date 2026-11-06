@@ -672,6 +672,25 @@ assert(
  * `statusInject` is assigned further down, once the entry is registered. */
 let modelRowsRef = () => []
 const modelRows = () => modelRowsRef()
+/*
+ * Read the live reading out of a rendered tree. The component publishes it on the trigger as
+ * `data-live-phase`, which is the only place a test can observe the phase without reaching into
+ * the hook runtime.
+ */
+const liveOf = (tree) => {
+  const trigger = findAll(tree, (el) => String(el.props.className ?? '').includes('dsh-rum-trigger'))[0]
+  if (trigger === undefined) return null
+  const phase = trigger.props['data-live-phase']
+  if (phase === undefined || phase === null) return null
+  /*
+   * The compaction reading itself is published as JSON on the trigger, because a spec asserts
+   * its shape (no first token, no rate, a frozen span once it lands) and the phase alone says
+   * nothing about those.
+   */
+  const raw = trigger.props['data-compaction-reading']
+  const compaction = raw === undefined ? undefined : JSON.parse(String(raw))
+  return { phase, compaction }
+}
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 ;(async () => {
@@ -763,6 +782,21 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     if (existing === undefined) statsSnapshot.turns.push({ turn, steps: [record] })
     else existing.steps.push(record)
     statsSteps.push(record)
+    statsSnapshot = { turns: statsSnapshot.turns.slice() }
+    for (const listener of [...statsListeners]) listener()
+  }
+  /**
+   * Attach a compaction to a turn. Compactions are not steps: they live on
+   * `turn.compactions[]` and carry their own start/end and their own usage.
+   */
+  const addCompaction = (turn, compaction) => {
+    const existing = statsSnapshot.turns.find((entry) => entry.turn === turn)
+    const record = { turn, ...compaction }
+    if (existing === undefined) statsSnapshot.turns.push({ turn, steps: [], compactions: [record] })
+    else {
+      if (existing.compactions === undefined) existing.compactions = []
+      existing.compactions.push(record)
+    }
     statsSnapshot = { turns: statsSnapshot.turns.slice() }
     for (const listener of [...statsListeners]) listener()
   }
@@ -1278,7 +1312,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
     assert(
       'numbered rows exclude the live step by identity, not by timing',
-      /base\.filter\(\(row\) => row\.key !== live\.key\)/.test(clientSource),
+      /visible\.filter\(\(row\) => row\.key !== live\.key\)/.test(clientSource),
     )
     assert(
       'a step with no figures yet takes no numbered row',
@@ -2285,8 +2319,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
          */
         (() => {
           const clientSource = fs.readFileSync(path.join(__dirname, '..', 'client', 'client.js'), 'utf8')
-          const filtered = /const visible = live === null \? base : base\.filter\(\(row\) => row\.key !== live\.key\)/.test(clientSource)
-          const capped = /return visible\.slice\(0, MAX_ROWS\)/.test(clientSource)
+          const filtered = /visible = visible\.filter\(\(row\) => row\.key !== live\.key\)/.test(clientSource)
           const notCappedEarlier = !/return rows\.slice\(-MAX_ROWS\)\.reverse\(\)/.test(clientSource)
           return filtered && capped && notCappedEarlier
         })(),
@@ -2459,7 +2492,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       if (start < 0) return false
       const body = source.slice(start, start + 1600)
       return (
-        /\.filter\(\(row\) => row\.interrupted !== true\)/.test(body) &&
+        /\.filter\(\(row\) => row\.interrupted !== true && row\.compaction !== true\)/.test(body) &&
         /count: rows\.length/.test(body)
       )
     })(),
@@ -2905,6 +2938,239 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         chosenRows[0].ttftMs === 111 && chosenRows[0].tokens === 333 && chosenRows[0].estimated === false,
       )
     }
+  }
+
+
+  /* ---------------------------------------------------------------- */
+  /* Compaction                                                         */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * Compaction is a fourth phase that overlaps the three step phases.
+   *
+   * It belongs to no step, has no first token and produces no generation rate, so the drawer
+   * row it gets is deliberately shaped differently: the speed column carries the wording, the
+   * first-token column stays a dash, and the total counts up while it runs then freezes at the
+   * fold's own `wall`. These cases pin that shape in both phases.
+   */
+  {
+    console.log('\n--- compaction phase ---')
+    sessionRunningStub = false
+    statsSnapshot = { turns: [] }
+    statsSteps.length = 0
+
+    // A running compaction: `running` is what `endSeq === null` reports.
+    addCompaction(20, {
+      compactionId: 'cmp-running',
+      startTime: 20_000_000,
+      endTime: null,
+      wall: null,
+      running: true,
+      output: null,
+      context: null,
+      cacheRead: null,
+      cacheHit: null,
+      provider: null,
+      model: null,
+      shadowedTokens: null,
+    })
+
+    const compactingProps = {
+      ...statusInject,
+      useChat: (sel) =>
+        sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+      useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+      useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+      useSession: (sel) => sel({ running: sessionRunningStub }),
+      statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+      useTrajectory: () => ({ eventNodes: [], requests: [] }),
+      t,
+    }
+    const compactingTree = await runtime.render(status.component, compactingProps)
+
+    assert(
+      'a running compaction moves the pill into the compacting phase',
+      liveOf(compactingTree)?.phase === 'compacting',
+    )
+    assert(
+      'a running compaction is the live reading, not a numbered row',
+      /*
+       * It is drawn above the list, exactly where a streaming request goes, so the numbered
+       * rows must not repeat it — the live reading is what carries it.
+       */
+      liveOf(compactingTree)?.compaction !== undefined &&
+        liveOf(compactingTree).compaction.running === true &&
+        modelRows().every((row) => row.compaction !== true),
+    )
+    assert(
+      'the compacting reading has no first token and no rate',
+      (() => {
+        const reading = liveOf(compactingTree)?.compaction
+        return reading !== undefined && reading.ttftMs === null && reading.speed === null
+      })(),
+    )
+    assert(
+      'the compacting reading counts from its own start while it runs',
+      (() => {
+        const reading = liveOf(compactingTree)?.compaction
+        // The frozen total is null while running; the span is computed from the start instead.
+        /*
+         * While it runs the reading carries the live span (start to now), which is what the
+         * pill and the row both count; the fold's `wall` only exists after it lands.
+         */
+        return (
+          reading !== undefined &&
+          reading.startMs === 20_000_000 &&
+          typeof reading.totalMs === 'number' &&
+          reading.totalMs >= 0
+        )
+      })(),
+    )
+    assert(
+      'the pill marks the compacting phase with its own class',
+      /dsh-rum-compact-anchor/.test(String(findAll(compactingTree, (el) => String(el.props.className ?? '').includes('dsh-rum-trigger'))[0]?.props?.className ?? '')),
+    )
+    assert(
+      'a compaction without a reported model names the chat model instead',
+      (() => {
+        const trigger = findAll(compactingTree, (el) =>
+          String(el.props.className ?? '').includes('dsh-rum-trigger'),
+        )[0]
+        if (trigger === undefined) return false
+        return String(trigger.props['aria-label'] ?? '').includes('使用对话模型')
+      })(),
+    )
+
+    // It lands: the fold reports the span, the tokens and the model.
+    statsSnapshot = { turns: [] }
+    statsSteps.length = 0
+    addCompaction(20, {
+      compactionId: 'cmp-done',
+      startTime: 20_000_000,
+      endTime: 20_032_590,
+      wall: 32_590,
+      running: false,
+      output: 4976,
+      context: 357_725,
+      cacheRead: 357_120,
+      cacheHit: 0.9983,
+      provider: 'buddy',
+      model: 'deepseek-v4.1-flash',
+      shadowedTokens: 630_872,
+    })
+
+    const doneTree = await runtime.render(status.component, compactingProps)
+    assert(
+      'a finished compaction keeps the phase, so the pill can say it completed',
+      liveOf(doneTree)?.phase === 'compacted',
+    )
+    assert(
+      'the finished row takes its span from the fold, not from the clock',
+      (() => {
+        const row = modelRows().find((entry) => entry.compaction === true)
+        return row !== undefined && row.totalMs === 32_590 && row.running === false
+      })(),
+    )
+    assert(
+      'the finished row fills in its output tokens and its amortised rate',
+      (() => {
+        const row = modelRows().find((entry) => entry.compaction === true)
+        if (row === undefined) return false
+        // 4976 tokens over 32.59 s.
+        return row.tokens === 4976 && Math.round(row.amortized) === 153
+      })(),
+    )
+    assert(
+      'the finished row still has no first token',
+      (() => {
+        const row = modelRows().find((entry) => entry.compaction === true)
+        return row !== undefined && row.ttftMs === null
+      })(),
+    )
+    assert(
+      'the finished row names the model that summarised',
+      (() => {
+        const row = modelRows().find((entry) => entry.compaction === true)
+        return row !== undefined && row.model === 'deepseek-v4.1-flash' && row.provider === 'buddy'
+      })(),
+    )
+    assert(
+      'the compaction row stays out of the average, which still counts every row',
+      (() => {
+        const withCompaction = source.indexOf('function averageOf(')
+        if (withCompaction < 0) return false
+        const body = source.slice(withCompaction, withCompaction + 1700)
+        return (
+          /row\.compaction !== true/.test(body) &&
+          /row\.interrupted !== true/.test(body) &&
+          /count: rows\.length/.test(body)
+        )
+      })(),
+    )
+
+    /*
+     * The rendered row, not just its reading.
+     *
+     * The drawer must print the compaction wording in the speed column and the placeholder in
+     * the first-token column, whatever the reading object happens to carry — those are two
+     * separate code paths, and only the rendering is what the user sees.
+     */
+    {
+      const opened = await runtime.render(status.component, compactingProps)
+      const opener = findAll(opened, (el) =>
+        String(el.props.className ?? '').includes('dsh-rum-trigger'),
+      )[0]
+      if (opener !== undefined) opener.props.onClick({ stopPropagation() {}, preventDefault() {} })
+      const reopenedTree = await runtime.render(status.component, compactingProps)
+      const compactionRow = findAll(reopenedTree, (el) =>
+        String(el.props.className ?? '').includes('dsh-rum-item'),
+      ).find((row) => {
+        const cells = findAll(row, (el) => String(el.props.className ?? '').includes('dsh-rum-col'))
+        return cells.length >= 5
+      })
+      assert(
+        'the drawer prints a dash in the first-token column for a compaction',
+        /*
+         * Cells in order: first token, speed, tokens, total, amortised. The first must be the
+         * placeholder — a compaction never produced a first token, so printing a duration there
+         * would claim a measurement that does not exist.
+         *
+         * The column is decided by the row type, not by the reading being null, so a future
+         * change that put a duration on a compaction reading could not leak it into this cell.
+         */
+        (() => {
+          if (compactionRow === undefined) return false
+          const cells = findAll(compactionRow, (el) =>
+            String(el.props.className ?? '').includes('dsh-rum-col'),
+          )
+          return normalize(textOf(cells[0])).trim() === '—'
+        })(),
+      )
+      assert(
+        'the first-token cell is forced to the placeholder by row type',
+        /secondsText\(entry\.row\.compaction === true \? null : entry\.row\.ttftMs, t\)/.test(source),
+      )
+    }
+
+
+    // A new request after a finished compaction returns the pill to the writing phase.
+    addStatsStep(21, 0, {
+      startTime: 20_100_000,
+      endTime: null,
+      ttft: null,
+      model: null,
+      decode: null,
+      tps: null,
+      output: null,
+      wall: null,
+      running: true,
+    })
+    sessionRunningStub = true
+    const afterTree = await runtime.render(status.component, compactingProps)
+    assert(
+      'a new request ends the compacted phase',
+      liveOf(afterTree)?.phase === 'writing',
+    )
   }
 
 

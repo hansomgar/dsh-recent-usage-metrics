@@ -89,7 +89,17 @@ window.__ModuleLoader__.load({
       drawerEmpty: '还没有完成的请求。发一条消息后，它的指标会出现在这里。',
       drawerLive: '生成中',
       drawerTools: '调用工具中',
+      drawerCompacting: '上下文压缩中',
+      drawerCompacted: '上下文压缩完成',
       interrupted: '中断',
+      /*
+       * The compaction phase has no model of its own until it finishes: `compaction/start`
+       * records only an id and a turn, and `compaction/summary` is what reports the model. While
+       * it runs, the summarizer reuses the routed model of the last request, so that is what the
+       * row can honestly say — falling back to this general wording when even that is unknown.
+       */
+      compactionSpeed: '压缩上下文',
+      usingChatModel: '使用对话模型',
       colIndex: '#',
       colTime: '时间',
       colTtft: '首字',
@@ -102,6 +112,16 @@ window.__ModuleLoader__.load({
       secondsAgo: '{count} 秒前',
       minutesAgo: '{count} 分钟前',
       hoursAgo: '{count} 小时前',
+      // Column-header hints. `{bolt}` / `{tools}` / `{compact}` are replaced by the glyphs
+      // themselves, which is why these are rendered by the tooltip component and not by title.
+      hintIndex: '行号：1–10 为已完成的最近记录，{bolt} 为模型输出中，{tools} 为工具调用中，{compact} 为压缩上下文中',
+      hintTime: '请求发出的时刻（本地时间）',
+      hintTtft: '从发出到收到第一个 token 的耗时',
+      hintSpeed: '模型生成速度 = 输出 token ÷ 解码时长',
+      hintTokens: '模型本次生成的 token 数',
+      hintTotal: '请求耗时：从发出请求一直到模型输出结束',
+      hintAmortized: '输出 token ÷ 总用时，包含请求时间和响应时间，更加能表明本地到模型输出完整链路的速度',
+      tokensHint: '输入 {input} · 缓存命中 {hit}',
     }
 
     const en = {
@@ -125,7 +145,11 @@ window.__ModuleLoader__.load({
       drawerEmpty: 'No completed requests yet. Send a message and its metrics appear here.',
       drawerLive: 'Streaming',
       drawerTools: 'Calling tools',
+      drawerCompacting: 'Compacting context',
+      drawerCompacted: 'Context compacted',
       interrupted: 'Interrupted',
+      compactionSpeed: 'Compaction',
+      usingChatModel: 'Chat model',
       colIndex: '#',
       colTime: 'At',
       /*
@@ -148,6 +172,14 @@ window.__ModuleLoader__.load({
       secondsAgo: '{count}s ago',
       minutesAgo: '{count}m ago',
       hoursAgo: '{count}h ago',
+      hintIndex: 'Row number: 1–10 are the most recent finished records; {bolt} is a model reply, {tools} is a tool call, {compact} is a context compaction',
+      hintTime: 'When the request was issued (local time)',
+      hintTtft: 'Time from issuing the request to receiving its first token',
+      hintSpeed: 'Generation speed = output tokens ÷ decode time',
+      hintTokens: 'Tokens this reply generated',
+      hintTotal: 'Request time: from issuing the request until the model finished replying',
+      hintAmortized: 'Output tokens ÷ total time, including both queueing and response — the throughput of the whole local-to-model path',
+      tokensHint: 'Input {input} · cache hit {hit}',
     }
 
     const STYLE_TEXT = `
@@ -471,6 +503,89 @@ window.__ModuleLoader__.load({
  */
 .dsh-rum-tool-icon {
   color: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary));
+}
+/*
+ * The compaction marker.
+ *
+ * Shares the bolt's box and pulse so switching phases never moves the pill; only the glyph
+ * inside changes. The colour is deliberately its own — the three phases must stay apart for a
+ * reader who cannot tell the shapes apart.
+ */
+.dsh-rum-compaction-icon {
+  color: var(--dsw-alias-state-warning-primary, var(--dsw-alias-brand-primary));
+}
+/* A finished compaction keeps its glyph but stops breathing, so "done" looks settled. */
+.dsh-rum-still {
+  animation: none;
+}
+/*
+ * The compaction reading replaces the five metric slots with a clock, a model, the wording and
+ * a running span.
+ *
+ * The button reserves the width the idle layout needs, measured once and refreshed on resize.
+ * Every segment inside is either fixed-width or clipped, so no value can grow the pill while
+ * it is showing — the composer below would shift on each tick otherwise.
+ */
+.dsh-rum-compact-anchor {
+  min-width: var(--dsh-rum-pill-width, auto);
+}
+.dsh-rum-compact-parts {
+  align-items: baseline;
+  gap: 8px;
+}
+.dsh-rum-compact-clock {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.dsh-rum-compact-model {
+  /*
+   * The model name is the only segment whose length is unknown, so it absorbs the slack and
+   * truncates. Without the cap a long provider/model pair would push the wording out of the
+   * pill and the drawer's own edge would no longer line up with it.
+   */
+  flex: 0 1 auto;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dsh-rum-compact-span {
+  /* "12.3" up to "999.9": five characters plus the decimal point, reserved. */
+  width: 5.5ch;
+}
+/*
+ * The hover hint.
+ *
+ * Fixed on the body so no scroll container can clip it, above the anchor by default. The
+ * surface is the same menu material the drawer uses, so the hint cannot look foreign beside it.
+ */
+.dsh-rum-tip {
+  position: fixed;
+  z-index: 2147483100;
+  max-width: 320px;
+  padding: 7px 9px;
+  border-radius: var(--dsw-radius-sm);
+  border: 1px solid var(--dsw-alias-border-l1, transparent);
+  background: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-2));
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  box-shadow: var(--dsw-elevation-prominent, 0 6px 20px rgba(0, 0, 0, .28));
+  transform: translateY(-100%);
+  margin-top: -8px;
+  pointer-events: none;
+  white-space: normal;
+}
+/* The glyphs the index hint names, drawn inline so the hint can show them rather than spell them. */
+.dsh-rum-tip svg {
+  width: 10px;
+  height: 10px;
+  vertical-align: -1px;
+  margin: 0 1px;
+}
+.dsh-rum-tip .dsh-rum-tip-icon {
+  color: var(--dsw-alias-brand-primary);
 }
 .dsh-rum-empty {
   flex: 1 1 auto;
@@ -936,6 +1051,16 @@ window.__ModuleLoader__.load({
           tokens !== null && tokens > 0 && totalMs !== null && totalMs > 0
             ? tokens / (totalMs / 1000)
             : null,
+        /*
+         * The model that answered, and the input-side accounting, all for tooltips. The fold
+         * does not put a provider/model on a step — it only carries them for a compaction — so
+         * the caller fills these from the chat snapshot's own assistant nodes.
+         */
+        model: null,
+        provider: null,
+        context: numberOrNull(stats.context),
+        cacheRead: numberOrNull(stats.cacheRead),
+        cacheHit: numberOrNull(stats.cacheHit),
       }
     }
 
@@ -970,6 +1095,160 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * A compaction transaction as a drawer row.
+     *
+     * Compaction is not a step: it lives on `turn.compactions[]`, opened by `compaction/start`
+     * and closed by `compaction/end`, and it never produces an `assistant/message`. So it has
+     * no first token, no decode span and no generation rate — the three columns that depend on
+     * a settled reply stay empty, and the speed column says what is happening instead.
+     *
+     * What it does have is a wall-clock span, which is the figure the user wants: how long the
+     * summarization ran. While it runs, `endTime` is null and the drawer counts up from
+     * `startTime`; once it lands, `wall` freezes the same span.
+     */
+    function readingOfCompaction(compaction) {
+      const startMs = numberOrNull(compaction.startTime)
+      const wallMs = numberOrNull(compaction.wall)
+      const running = compaction.running === true
+      const tokens = numberOrNull(compaction.output)
+      return {
+        key: `compaction:${compaction.compactionId}`,
+        compaction: true,
+        compactionId: compaction.compactionId,
+        running,
+        at: startMs,
+        startMs,
+        // A compaction has no first token, so the column is always the dash.
+        ttftMs: null,
+        interrupted: false,
+        totalMs: running ? null : wallMs,
+        tokens,
+        estimated: false,
+        speed: null,
+        /*
+         * The amortised figure a compaction can report is `output ÷ wall` — the throughput of
+         * the whole summarization call, which includes replaying the conversation prefix. It
+         * is not the decode rate an ordinary row reports, but it is a real measurement of this
+         * transaction, so it is shown as-is rather than hidden behind the estimate marker.
+         */
+        amortized:
+          !running && tokens !== null && tokens > 0 && wallMs !== null && wallMs > 0
+            ? tokens / (wallMs / 1000)
+            : null,
+        /** Which model summarised. Only `compaction/summary` reports it, so it lands at the end. */
+        model: typeof compaction.model === 'string' && compaction.model !== '' ? compaction.model : null,
+        provider:
+          typeof compaction.provider === 'string' && compaction.provider !== '' ? compaction.provider : null,
+        /** Input-side accounting, for the tokens column's tooltip. */
+        context: numberOrNull(compaction.context),
+        cacheRead: numberOrNull(compaction.cacheRead),
+        cacheHit: numberOrNull(compaction.cacheHit),
+        shadowedTokens: numberOrNull(compaction.shadowedTokens),
+      }
+    }
+
+    /**
+     * Every compaction the session fold knows about, oldest first.
+     *
+     * They are read separately from the steps because they are not steps: `historyFromStats`
+     * merges the two streams and orders them by start time, so a compaction lands in the
+     * drawer exactly where it happened in the transcript.
+     */
+    function compactionsFromStats(statsSnapshot) {
+      const turns = statsSnapshot?.turns
+      if (!Array.isArray(turns)) return []
+      const rows = []
+      for (const turn of turns) {
+        if (!Array.isArray(turn.compactions)) continue
+        for (const compaction of turn.compactions) {
+          if (typeof compaction?.compactionId !== 'string') continue
+          if (numberOrNull(compaction.startTime) === null) continue
+          rows.push(readingOfCompaction(compaction))
+        }
+      }
+      return rows
+    }
+
+    /**
+     * Which model answered each step, keyed `turn:step`.
+     *
+     * The fold does not put a provider/model on a step — `stepMetrics` carries only derived
+     * figures, and an assistant chat node carries only its usage and timings. The model is
+     * recorded once per routed request as a `request/header` event row on the turn, so a step
+     * is attributed to the newest header that precedes it.
+     *
+     * Verified against the log: on a real session the newest preceding header matched the
+     * `assistant/message.source` of every one of 40 sampled steps. Headers are per-routed-
+     * request, so several consecutive steps share one, and a model switch starts a new one.
+     */
+    function modelIndexFromStats(statsSnapshot) {
+      const turns = statsSnapshot?.turns
+      const index = new Map()
+      if (!Array.isArray(turns)) return index
+      for (const turn of turns) {
+        if (!Array.isArray(turn.steps)) continue
+        const headers = []
+        if (Array.isArray(turn.events)) {
+          for (const event of turn.events) {
+            if (event?.kind !== 'request-header') continue
+            if (typeof event.model !== 'string' && typeof event.provider !== 'string') continue
+            headers.push({ time: numberOrNull(event.time) ?? 0, provider: event.provider ?? null, model: event.model ?? null })
+          }
+          headers.sort((left, right) => left.time - right.time)
+        }
+        if (headers.length === 0) continue
+        for (const step of turn.steps) {
+          const at = numberOrNull(step.startTime)
+          if (at === null || typeof step.step !== 'number') continue
+          let chosen = null
+          for (const header of headers) {
+            if (header.time <= at) chosen = header
+            else break
+          }
+          if (chosen === null) continue
+          index.set(`${turn.turn}:${step.step}`, chosen)
+        }
+      }
+      return index
+    }
+
+    /**
+     * Whether any step started after this compaction finished.
+     *
+     * That is what ends the "just compacted" wording: the fold keeps a compaction record for
+     * the life of the session, so its presence alone can never mean "this just happened".
+     * A step whose `startTime` is later than the compaction's end is the next request.
+     */
+    function compactionHadSuccessor(compaction, statsSnapshot) {
+      const turns = statsSnapshot?.turns
+      if (!Array.isArray(turns)) return false
+      const endedAt = numberOrNull(compaction.totalMs) === null ? null : compaction.at + compaction.totalMs
+      if (endedAt === null) return false
+      for (const turn of turns) {
+        if (!Array.isArray(turn.steps)) continue
+        for (const step of turn.steps) {
+          const start = numberOrNull(step.startTime)
+          if (start !== null && start > endedAt) return true
+        }
+      }
+      return false
+    }
+
+    /**
+     * The newest compaction in a snapshot, or null.
+     *
+     * The pill and the live row both need one record, not the list, so this picks by start
+     * time: a session can compact several times, and only the latest is "what is happening".
+     */
+    function compactionsOf(statsSnapshot) {
+      const all = compactionsFromStats(statsSnapshot)
+      if (all.length === 0) return null
+      let newest = all[0]
+      for (const row of all) if ((row.at ?? 0) > (newest.at ?? 0)) newest = row
+      return newest
+    }
+
+    /**
      * The newest readings for a session, newest first.
      *
      * A step is included as soon as it has produced a figure, not only once `step/end`
@@ -988,14 +1267,30 @@ window.__ModuleLoader__.load({
      */
     function historyFromStats(statsSnapshot) {
       const steps = statsSteps(statsSnapshot)
+      const models = modelIndexFromStats(statsSnapshot)
       const rows = []
       for (const entry of steps) {
         // A step only has a row once it has started; `step/start` is what supplies this.
         if (numberOrNull(entry.metrics.startTime) === null) continue
         if (!statsStepHasFigures(entry.metrics)) continue
-        rows.push(readingOfStatsStep(entry))
+        const row = readingOfStatsStep(entry)
+        // Attribute the request to the model that served it, for the speed column's tooltip.
+        const owner = models.get(row.key)
+        if (owner !== undefined) {
+          row.model = owner.model
+          row.provider = owner.provider
+        }
+        rows.push(row)
       }
-      return rows.reverse()
+      // Compactions are not steps, so they are collected separately and then ordered together.
+      for (const row of compactionsFromStats(statsSnapshot)) rows.push(row)
+      /*
+       * Newest first, by start time. The two streams interleave in real time — a turn can run
+       * several steps, compact, then run more — so ordering them by the moment each began is
+       * what puts the compaction where it actually happened rather than at either end.
+       */
+      rows.sort((left, right) => (right.at ?? 0) - (left.at ?? 0))
+      return rows
     }
 
     function readJson(key) {
@@ -1317,6 +1612,230 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * The compaction marker: three stacked bars, each shorter than the one above.
+     *
+     * Chosen over the converging-chevron and arrow-pair candidates because at 14px the three
+     * bars keep visible gaps between them, while the pointed shapes blurred into a single
+     * blob. It also carries the meaning directly — a long history reduced to a short one.
+     *
+     * Bar widths and gaps mirror the bolt's vertical extent so the three glyphs (bolt, T,
+     * compactor) share one optical size inside the same 14x14 box.
+     */
+    function CompactionIcon(props) {
+      return h(
+        'svg',
+        { viewBox: '0 0 16 16', className: props.className, 'aria-hidden': true, fill: 'currentColor' },
+        h('rect', { x: 2.8, y: 3.1, width: 10.4, height: 2, rx: 1 }),
+        h('rect', { x: 4.6, y: 7, width: 6.8, height: 2, rx: 1 }),
+        h('rect', { x: 6.5, y: 10.9, width: 3, height: 2, rx: 1 }),
+      )
+    }
+
+    /**
+     * The full timestamp, for the clock column's hint.
+     *
+     * `MM-DD HH:mm:ss.SSS` — the clock cell itself only has room for the time of day, and the
+     * relative wording it replaced ("3 minutes ago") cannot answer which request a row is.
+     */
+    function absoluteStamp(at) {
+      const ms = numberOrNull(at)
+      if (ms === null) return ''
+      const date = new Date(ms)
+      const pad = (value, width) => String(value).padStart(width, '0')
+      return (
+        `${pad(date.getMonth() + 1, 2)}-${pad(date.getDate(), 2)} ` +
+        `${pad(date.getHours(), 2)}:${pad(date.getMinutes(), 2)}:${pad(date.getSeconds(), 2)}.` +
+        `${pad(date.getMilliseconds(), 3)}`
+      )
+    }
+
+    /** The speed column's hint: which model served this row. */
+    function modelHintText(row, t) {
+      if (row.compaction === true) return compactionModelName(row, t)
+      const model = typeof row.model === 'string' && row.model !== '' ? row.model : null
+      const provider = typeof row.provider === 'string' && row.provider !== '' ? row.provider : null
+      if (model === null) return t('usingChatModel')
+      return provider === null ? model : `${provider} / ${model}`
+    }
+
+    /** The tokens column's hint: the input side, which the cell itself does not show. */
+    function tokensHintText(row, t) {
+      const none = t('none')
+      const input = row.context === null || row.context === undefined ? none : tokensText(row.context, false, t)
+      const hit =
+        row.cacheHit === null || row.cacheHit === undefined
+          ? none
+          : `${(row.cacheHit * 100).toFixed(1)}%`
+      return t('tokensHint', { input, hit })
+    }
+
+    /**
+     * The index header's hint, with the three phase glyphs drawn in place.
+     *
+     * This is the reason the drawer owns a tooltip component at all: `title` can only carry
+     * plain text, and the hint has to name the bolt, the T and the compaction bars. The glyphs
+     * are rendered as elements and substituted into the sentence, so the wording and the
+     * drawer's own markers can never drift apart.
+     */
+    function indexHint(t) {
+      const glyph = (Icon) => h(Icon, { className: 'dsh-rum-tip-icon' })
+      /*
+       * Split on every placeholder first, then walk the pieces: a string piece is literal text,
+       * a placeholder becomes its glyph. Walking once over a token list is simpler to follow
+       * than nesting one split per placeholder.
+       */
+      const tokens = t('hintIndex').split(/(\{bolt\}|\{tools\}|\{compact\})/)
+      const nodes = []
+      for (let i = 0; i < tokens.length; i += 1) {
+        const token = tokens[i]
+        if (token === '') continue
+        if (token === '{bolt}') nodes.push(glyph(BoltIcon))
+        else if (token === '{tools}') nodes.push(glyph(ToolIcon))
+        else if (token === '{compact}') nodes.push(glyph(CompactionIcon))
+        else nodes.push(token)
+      }
+      return h('span', null, ...nodes)
+    }
+
+    /**
+     * A hover hint, rendered as real DOM rather than through `title`.
+     *
+     * `title` can only show plain text, and the `#` header's hint names the three state glyphs
+     * — it has to draw them. Owning the tooltip also keeps one visual language across the
+     * drawer, lets it follow the theme's own surfaces, and avoids the browser's one-second
+     * delay.
+     *
+     * It is positioned `fixed` on the body so no scroll container can clip it, and flipped
+     * below the anchor when there is no room above.
+     */
+    function Tooltip(props) {
+      const { open, x, y, children } = props
+      if (!open) return null
+      return portal(
+        h(
+          'div',
+          {
+            className: 'dsh-rum-tip',
+            role: 'tooltip',
+            style: { left: `${x}px`, top: `${y}px` },
+          },
+          children,
+        ),
+      )
+    }
+
+    /**
+     * Hover state for one row or one header.
+     *
+     * A short delay keeps a hint from flashing while the pointer sweeps across the drawer,
+     * and a single shared timer is enough because only one hint can be open at a time.
+     */
+    function useHint(delay) {
+      const [hint, setHint] = useState(null)
+      const timer = useRef(null)
+      const cancel = useCallback(() => {
+        if (timer.current !== null) {
+          clearTimeout(timer.current)
+          timer.current = null
+        }
+      }, [])
+      const show = useCallback(
+        (content, event) => {
+          cancel()
+          const rect = event?.currentTarget?.getBoundingClientRect?.()
+          if (rect === undefined) return
+          timer.current = setTimeout(() => {
+            timer.current = null
+            setHint({ content, x: rect.left, y: rect.top })
+          }, delay)
+        },
+        [cancel, delay],
+      )
+      const hide = useCallback(() => {
+        cancel()
+        setHint(null)
+      }, [cancel])
+      useEffect(() => cancel, [cancel])
+      return { hint, show, hide }
+    }
+
+    /**
+     * The compaction wording as one sentence, for the button's accessible name.
+     */
+    function compactionSentence(compaction, phase, now, t) {
+      const elapsed = compactionSpan(compaction, now)
+      const parts = [
+        clockText(compaction.at),
+        compactionModelName(compaction, t),
+        phase === 'compacting' ? t('drawerCompacting') : t('drawerCompacted'),
+        secondsText(elapsed, t),
+      ]
+      return parts.join(' · ')
+    }
+
+    /**
+     * How long a compaction has run: live while it runs, frozen once it lands.
+     *
+     * The live figure counts from `startTime`, which is the same origin the drawer row uses,
+     * so the pill and the row can never disagree. Once the fold reports `wall`, that log value
+     * takes over so a reload shows the same span it showed live.
+     */
+    function compactionSpan(compaction, now) {
+      if (compaction.running === true) {
+        if (compaction.startMs === null) return null
+        return Math.max(0, now - compaction.startMs)
+      }
+      return compaction.totalMs
+    }
+
+    /**
+     * The model a compaction used, or the wording that stands in for it.
+     *
+     * `compaction/summary` reports the real model, so a finished compaction always knows it.
+     * While one runs the fold has only an id and a turn — the summarizer's own request is not
+     * logged as a header — so the routed model of the last request is the honest reading, and
+     * the general wording is the last resort.
+     */
+    function compactionModelName(compaction, t) {
+      if (typeof compaction.model === 'string' && compaction.model !== '') return compaction.model
+      return t('usingChatModel')
+    }
+
+    /**
+     * The compaction variant of the status reading.
+     *
+     * Three segments replace the five metric slots: the clock the compaction began at, the
+     * model doing it, and how long it has been running. The pill's own width is left to
+     * `--dsh-rum-pill-width`, measured from the idle layout, so switching into this phase
+     * cannot move anything beside it.
+     */
+    function CompactionReading(props) {
+      const { compaction, phase, now, t } = props
+      const span = compactionSpan(compaction, now)
+      return h(
+        'span',
+        { className: 'dsh-rum-parts dsh-rum-compact-parts' },
+        h('span', { className: 'dsh-rum-part dsh-rum-compact-clock' }, clockText(compaction.at)),
+        h(
+          'span',
+          { className: 'dsh-rum-part dsh-rum-compact-model', title: compactionModelName(compaction, t) },
+          compactionModelName(compaction, t),
+        ),
+        h(
+          'span',
+          { className: 'dsh-rum-part' },
+          phase === 'compacting' ? t('drawerCompacting') : t('drawerCompacted'),
+        ),
+        h(
+          'span',
+          { className: 'dsh-rum-part' },
+          h('span', { className: 'dsh-rum-num dsh-rum-compact-span' }, durationSlot(span)),
+          h('span', { className: 'dsh-rum-unit' }, DURATION_UNIT),
+        ),
+      )
+    }
+
     function ChevronIcon(props) {
       return h(
         'svg',
@@ -1616,7 +2135,15 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    function useLiveReading(useChat, enabled, trajectory, runningStatsStep, sessionTurnOpen, sessionRunning) {
+    function useLiveReading(
+      useChat,
+      enabled,
+      trajectory,
+      runningStatsStep,
+      sessionTurnOpen,
+      sessionRunning,
+      sessionStats,
+    ) {
       const partial = useChat((snapshot) => snapshot.legacy.partial)
       const nodes = useChat((snapshot) => snapshot.legacy.nodes)
       const turnTimings = useChat((snapshot) => snapshot.legacy.turnTimings)
@@ -1682,7 +2209,38 @@ window.__ModuleLoader__.load({
        * A closed turn admits no live step at all, so a step still flagged running in a stale
        * snapshot cannot revive either marker.
        */
+      /*
+       * The newest compaction in the session, running or just finished.
+       *
+       * Compaction is a fourth kind of activity that overlaps the others: it runs between
+       * steps, belongs to no step, and can take tens of seconds. Without it the pill simply
+       * froze on the previous figures for the whole summarization, which is exactly the
+       * "I cannot tell what it is doing" complaint.
+       */
+      const compactionNow = compactionsOf(sessionStats)
+      const liveCompaction = compactionNow?.running === true ? compactionNow : null
+      /*
+       * A compaction that finished and has not yet been followed by a new request.
+       *
+       * The pill keeps saying "compacted" until the next request starts, so the user can see
+       * that the long pause was the summarization finishing rather than the app stalling. A
+       * step that began after the compaction ended is what ends it — the fold keeps the
+       * compaction record forever, so its mere presence cannot mean "just happened".
+       */
+      const recentCompaction =
+        liveCompaction !== null
+          ? null
+          : compactionNow !== null && !compactionHadSuccessor(compactionNow, sessionStats)
+            ? compactionNow
+            : null
       const livePhase = (() => {
+        /*
+         * Compaction wins over the step phases: it happens between steps, so a running
+         * compaction and a running step cannot both be true, and checking it first keeps the
+         * "compacted, waiting for the next request" state from being mistaken for idle.
+         */
+        if (liveCompaction !== null) return 'compacting'
+        if (recentCompaction !== null) return 'compacted'
         if (!turnIsOpen) return null
         if (runningStatsStep !== null && runningStatsStep !== undefined) {
           const metrics = runningStatsStep.metrics
@@ -1695,7 +2253,9 @@ window.__ModuleLoader__.load({
         if (partial !== null && partial !== undefined) return 'writing'
         return null
       })()
-      const liveStep = livePhase === null
+      /** The compaction a render should show, whichever of the two phases is active. */
+      const activeCompaction = liveCompaction ?? recentCompaction
+      const liveStep = livePhase === null || activeCompaction !== null
         ? null
         : runningStatsStep !== null && runningStatsStep !== undefined
           ? { turn: runningStatsStep.turn, step: runningStatsStep.step }
@@ -1704,7 +2264,11 @@ window.__ModuleLoader__.load({
               ? null
               : { turn: partial.turn, step: partial.step }
             : { turn: request.turn, step: request.step }
-      const running = enabled && liveStep !== null
+      /*
+       * A compaction is live too, even though it has no step: the clock has to tick for its
+       * running span, and the early returns below gate on this flag.
+       */
+      const running = enabled && (liveStep !== null || activeCompaction !== null)
       const [now, setNow] = useState(() => Date.now())
       const observation = useRef({ key: null, firstTokenAt: null })
 
@@ -1721,7 +2285,11 @@ window.__ModuleLoader__.load({
        * content, so that appearance IS the first delta.
        */
       useEffect(() => {
-        if (!running) {
+        /*
+         * A compaction has no step, so there is no first-token mark to find: the guard covers
+         * the compacting phase, where `running` is true but `liveStep` is null by design.
+         */
+        if (!running || liveStep === null) {
           observation.current = { key: null, firstTokenAt: null }
           return
         }
@@ -1758,6 +2326,27 @@ window.__ModuleLoader__.load({
        *    lag the fold.
        * 3. Reconstruction from the previous step's last tool result, then the turn's start.
        */
+      /*
+       * A compaction has no step to measure, so the reading is built from the compaction alone:
+       * its own clock, its own span and its own model. Returning here keeps every step-shaped
+       * figure below out of the picture — there is no step to attribute them to.
+       */
+      if (activeCompaction !== null) {
+        return {
+          key: null,
+          at: activeCompaction.at,
+          startMs: activeCompaction.startMs,
+          ttftMs: null,
+          totalMs: compactionSpan(activeCompaction, now),
+          tokens: activeCompaction.tokens,
+          estimated: false,
+          speed: null,
+          amortized: activeCompaction.amortized,
+          replyLanded: false,
+          phase: livePhase,
+          compaction: activeCompaction,
+        }
+      }
       const statsStart =
         runningStatsStep !== null &&
         runningStatsStep !== undefined &&
@@ -1842,6 +2431,7 @@ window.__ModuleLoader__.load({
               : null,
           replyLanded: true,
           phase: livePhase,
+          compaction: activeCompaction,
         }
       }
 
@@ -1867,6 +2457,7 @@ window.__ModuleLoader__.load({
         amortized: tokens > 0 && elapsedMs !== null && elapsedMs > 0 ? tokens / (elapsedMs / 1000) : null,
         replyLanded: false,
         phase: livePhase,
+          compaction: activeCompaction,
       }
     }
 
@@ -2046,7 +2637,7 @@ window.__ModuleLoader__.load({
      */
     function averageOf(rows) {
       if (rows.length === 0) return null
-      const measurable = rows.filter((row) => row.interrupted !== true)
+      const measurable = rows.filter((row) => row.interrupted !== true && row.compaction !== true)
       const mean = (pick) => {
         let sum = 0
         let count = 0
@@ -2330,7 +2921,15 @@ window.__ModuleLoader__.load({
         return last.running !== false
       }, [sessionStats])
       const chatNodes = useChat((snapshot) => snapshot.legacy.nodes)
-      const live = useLiveReading(useChat, geek, trajectory, runningStatsStep, sessionTurnOpen, sessionRunning)
+      const live = useLiveReading(
+        useChat,
+        geek,
+        trajectory,
+        runningStatsStep,
+        sessionTurnOpen,
+        sessionRunning,
+        sessionStats,
+      )
 
       const triggerRef = useRef(null)
       const drawerRef = useRef(null)
@@ -2428,7 +3027,18 @@ window.__ModuleLoader__.load({
        */
       const listedRows = useMemo(() => {
         const base = statsRows ?? fallbackRows ?? []
-        const visible = live === null ? base : base.filter((row) => row.key !== live.key)
+        /*
+         * The running compaction is rendered as its own row above the list, so the numbered
+         * list must not repeat it. A finished compaction stays in the list — it is history
+         * then, and it is what the drawer is for.
+         */
+        const runningCompactionKey =
+          live !== null && live.compaction !== null && live.compaction.running === true
+            ? live.compaction.key
+            : null
+        let visible = base
+        if (live !== null && live.key !== null) visible = visible.filter((row) => row.key !== live.key)
+        if (runningCompactionKey !== null) visible = visible.filter((row) => row.key !== runningCompactionKey)
         return visible.slice(0, MAX_ROWS)
       }, [statsRows, fallbackRows, live])
 
@@ -2486,8 +3096,30 @@ window.__ModuleLoader__.load({
             return widths
           })
         }
+        /*
+         * Publish the idle layout's width so the compaction phase can reserve it.
+         *
+         * The compaction reading is much shorter than five metric slots, and without a floor
+         * the pill would shrink while it runs — moving the composer's neighbours and then
+         * moving them back when the phase ends. Measuring the settled layout once and pinning
+         * it as a CSS custom property keeps the pill the same size through every phase.
+         *
+         * The measurement is skipped in the compaction phases themselves: that layout is the
+         * one being constrained, so measuring it would ratchet the width down to itself.
+         */
+        const measurePillWidth = () => {
+          const anchor = triggerRef.current
+          if (anchor === null) return
+          const phase = anchor.getAttribute('data-live-phase')
+          if (phase === 'compacting' || phase === 'compacted') return
+          const width = anchor.getBoundingClientRect().width
+          if (!Number.isFinite(width) || width <= 0) return
+          anchor.style.setProperty('--dsh-rum-pill-width', `${Math.round(width)}px`)
+        }
         measure()
+        measurePillWidth()
         window.addEventListener('resize', measure)
+        window.addEventListener('resize', measurePillWidth)
         /*
          * A font-size change (the Settings font scale) or a metric swap moves the pill's
          * cells without a window resize; observe the pill itself so the drawer columns
@@ -2501,6 +3133,7 @@ window.__ModuleLoader__.load({
         }
         return () => {
           window.removeEventListener('resize', measure)
+          window.removeEventListener('resize', measurePillWidth)
           observer?.disconnect()
         }
       }, [mounted])
@@ -2614,6 +3247,22 @@ window.__ModuleLoader__.load({
               total: secondsText(current.totalMs, t),
               amortized: speedText(current.amortized, approximate, t),
             })}`
+      /*
+       * The compaction phases replace the whole set of figures with one sentence: a clock, the
+       * model, the wording and a running span. That layout is built as its own branch because
+       * none of the five metric slots apply — a compaction has no first token and no rate.
+       */
+      const compaction = live?.compaction ?? null
+      const compactingPhase = live?.phase === 'compacting' || live?.phase === 'compacted'
+      /*
+       * One hover hint serves the whole drawer: only one can be open at a time, and sharing the
+       * timer is what stops a hint from a previous row lingering while the pointer moves on.
+       */
+      const hint = useHint(300)
+      const compactionLabel =
+        compaction === null
+          ? statusLabel
+          : `${t('statusAria')} · ${compactionSentence(compaction, live.phase, now, t)}`
 
       return h(
         'div',
@@ -2623,18 +3272,52 @@ window.__ModuleLoader__.load({
           {
             ref: triggerRef,
             type: 'button',
-            className: 'dsh-rum-trigger' + (live !== null ? ' dsh-rum-live' : ''),
+            className:
+              'dsh-rum-trigger' +
+              (live !== null ? ' dsh-rum-live' : '') +
+              (compactingPhase ? ' dsh-rum-compact-anchor' : ''),
             'aria-haspopup': 'dialog',
             'aria-expanded': open,
-            'aria-label': statusLabel,
+            'aria-label': compactionLabel,
+            /* The active phase, so a test can observe it without reaching into the hooks. */
+            'data-live-phase': live === null ? undefined : live.phase,
+            /*
+             * The compaction reading, serialised for tests. The phase attribute says which of
+             * the four states is active; this says what the row actually carries — no first
+             * token, no rate, a span that freezes once the fold reports `wall`.
+             */
+            'data-compaction-reading':
+              compaction === null || live === null
+                ? undefined
+                : JSON.stringify({
+                    compactionId: compaction.compactionId,
+                    running: compaction.running,
+                    ttftMs: live.ttftMs,
+                    speed: live.speed,
+                    totalMs: compaction.running === true ? live.totalMs : compaction.totalMs,
+                    startMs: compaction.startMs,
+                    tokens: compaction.running === true ? null : compaction.tokens,
+                    model: compaction.model,
+                  }),
+            /* The four phases above are all a reader needs, but a spec also asserts the shape
+             * of the compaction reading, so its identity is published too. */
+            'data-compaction': compaction === null ? undefined : compaction.compactionId,
             onClick: () => {
               setPinned((current) => !current)
             },
           },
           live?.phase === 'tools'
             ? h(ToolIcon, { className: 'dsh-rum-bolt dsh-rum-tool-icon' })
-            : h(BoltIcon, { className: 'dsh-rum-bolt' }),
-          h(
+            : compactingPhase
+              ? h(CompactionIcon, {
+                  className:
+                    'dsh-rum-bolt dsh-rum-compaction-icon' +
+                    (live.phase === 'compacting' ? '' : ' dsh-rum-still'),
+                })
+              : h(BoltIcon, { className: 'dsh-rum-bolt' }),
+          compactingPhase && compaction !== null
+            ? h(CompactionReading, { compaction, phase: live.phase, now, t })
+            : h(
             'span',
             { className: 'dsh-rum-parts', ref: partsRef },
             h(
@@ -2672,6 +3355,12 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+        h(Tooltip, {
+          open: hint.hint !== null,
+          x: hint.hint?.x ?? 0,
+          y: hint.hint?.y ?? 0,
+          children: hint.hint?.content ?? null,
+        }),
         mounted
           ? portal(
               h(
@@ -2731,19 +3420,76 @@ window.__ModuleLoader__.load({
                       { className: 'dsh-rum-row', 'data-head': true, role: 'row' },
                       h(
                         'span',
-                        { className: 'dsh-rum-col', role: 'columnheader', 'data-align': 'start' },
+                        {
+                          className: 'dsh-rum-col',
+                          role: 'columnheader',
+                          'data-align': 'start',
+                          onMouseEnter: (event) => hint.show(indexHint(t), event),
+                          onMouseLeave: hint.hide,
+                        },
                         t('colIndex'),
                       ),
                       h(
                         'span',
-                        { className: 'dsh-rum-col', role: 'columnheader', 'data-align': 'start' },
+                        {
+                          className: 'dsh-rum-col',
+                          role: 'columnheader',
+                          'data-align': 'start',
+                          onMouseEnter: (event) => hint.show(t('hintTime'), event),
+                          onMouseLeave: hint.hide,
+                        },
                         t('colTime'),
                       ),
-                      h('span', { className: 'dsh-rum-col', role: 'columnheader' }, t('colTtft')),
-                      h('span', { className: 'dsh-rum-col', role: 'columnheader' }, t('colSpeed')),
-                      h('span', { className: 'dsh-rum-col', role: 'columnheader' }, t('colTokens')),
-                      h('span', { className: 'dsh-rum-col', role: 'columnheader' }, t('colTotal')),
-                      h('span', { className: 'dsh-rum-col', role: 'columnheader' }, t('colAmortized')),
+                      h(
+                        'span',
+                        {
+                          className: 'dsh-rum-col',
+                          role: 'columnheader',
+                          onMouseEnter: (event) => hint.show(t('hintTtft'), event),
+                          onMouseLeave: hint.hide,
+                        },
+                        t('colTtft'),
+                      ),
+                      h(
+                        'span',
+                        {
+                          className: 'dsh-rum-col',
+                          role: 'columnheader',
+                          onMouseEnter: (event) => hint.show(t('hintSpeed'), event),
+                          onMouseLeave: hint.hide,
+                        },
+                        t('colSpeed'),
+                      ),
+                      h(
+                        'span',
+                        {
+                          className: 'dsh-rum-col',
+                          role: 'columnheader',
+                          onMouseEnter: (event) => hint.show(t('hintTokens'), event),
+                          onMouseLeave: hint.hide,
+                        },
+                        t('colTokens'),
+                      ),
+                      h(
+                        'span',
+                        {
+                          className: 'dsh-rum-col',
+                          role: 'columnheader',
+                          onMouseEnter: (event) => hint.show(t('hintTotal'), event),
+                          onMouseLeave: hint.hide,
+                        },
+                        t('colTotal'),
+                      ),
+                      h(
+                        'span',
+                        {
+                          className: 'dsh-rum-col',
+                          role: 'columnheader',
+                          onMouseEnter: (event) => hint.show(t('hintAmortized'), event),
+                          onMouseLeave: hint.hide,
+                        },
+                        t('colAmortized'),
+                      ),
                     ),
                     live !== null
                       ? h(
@@ -2771,17 +3517,21 @@ window.__ModuleLoader__.load({
                                */
                               className: 'dsh-rum-col dsh-rum-index',
                               role: 'cell',
-                              'aria-label': t('drawerLive'),
-                              title: t('drawerLive'),
+                              'aria-label':
+                                live.compaction !== null && live.compaction !== undefined
+                                  ? t('drawerCompacting')
+                                  : t('drawerLive'),
                             },
                             /*
-                             * The same bolt the status pill uses while a request streams, so the
-                             * marker reads as one idea in both places rather than a dot here and
-                             * a bolt there.
+                             * The same glyphs the status pill uses, so a marker means one thing
+                             * wherever it appears: the bolt for a reply, the T for its tools,
+                             * the three bars for a compaction.
                              */
-                            live.phase === 'tools'
-                              ? h(ToolIcon, { className: 'dsh-rum-live-bolt dsh-rum-tool-icon' })
-                              : h(BoltIcon, { className: 'dsh-rum-live-bolt' }),
+                            live.compaction !== null && live.compaction !== undefined
+                              ? h(CompactionIcon, { className: 'dsh-rum-live-bolt dsh-rum-compaction-icon' })
+                              : live.phase === 'tools'
+                                ? h(ToolIcon, { className: 'dsh-rum-live-bolt dsh-rum-tool-icon' })
+                                : h(BoltIcon, { className: 'dsh-rum-live-bolt' }),
                           ),
                           /*
                            * The clock, not the word "streaming".
@@ -2807,10 +3557,21 @@ window.__ModuleLoader__.load({
                           h(
                             'span',
                             { className: 'dsh-rum-col dsh-rum-primary', role: 'cell' },
-                            speedText(live.speed, live.estimated === true, t),
+                            live.compaction !== null && live.compaction !== undefined
+                              ? t('compactionSpeed')
+                              : speedText(live.speed, live.estimated === true, t),
                           ),
                           h('span', { className: 'dsh-rum-col', role: 'cell' }, tokensText(live.tokens, live.estimated === true, t)),
-                          h('span', { className: 'dsh-rum-col', role: 'cell' }, secondsText(live.totalMs, t)),
+                          h(
+                            'span',
+                            { className: 'dsh-rum-col', role: 'cell' },
+                            secondsText(
+                              live.compaction !== null && live.compaction !== undefined
+                                ? compactionSpan(live.compaction, now)
+                                : live.totalMs,
+                              t,
+                            ),
+                          ),
                           h(
                             'span',
                             { className: 'dsh-rum-col', role: 'cell' },
@@ -2823,45 +3584,106 @@ window.__ModuleLoader__.load({
                         'div',
                         {
                           key: entry.key,
-                          className: 'dsh-rum-row dsh-rum-item',
+                          className:
+                            'dsh-rum-row dsh-rum-item' +
+                            (entry.row.compaction === true ? ' dsh-rum-compaction-row' : ''),
                           'data-phase': entry.phase,
                           role: 'row',
                         },
-                        h('span', { className: 'dsh-rum-index', role: 'cell' }, String(entry.index + 1)),
+                        /*
+                         * The index column shows the phase glyph instead of a number while a
+                         * request or a compaction is still running: the row is not a finished
+                         * record yet, so numbering it would imply it belongs with the ten.
+                         */
                         h(
                           'span',
-                          { className: 'dsh-rum-clock', role: 'cell', title: agoText(entry.row.at, now, t) },
+                          { className: 'dsh-rum-index', role: 'cell' },
+                          entry.row.compaction === true
+                            ? h(CompactionIcon, {
+                                className:
+                                  'dsh-rum-live-bolt dsh-rum-compaction-icon' +
+                                  (entry.row.running === true ? '' : ' dsh-rum-still'),
+                              })
+                            : entry.phase === 'tools'
+                              ? h(ToolIcon, { className: 'dsh-rum-live-bolt dsh-rum-tool-icon' })
+                              : entry.phase === 'writing'
+                                ? h(BoltIcon, { className: 'dsh-rum-live-bolt' })
+                                : String(entry.index + 1),
+                        ),
+                        /*
+                         * The clock's hint is the absolute timestamp: the relative wording the
+                         * cell used to carry in `title` moved into the tooltip once the drawer
+                         * gained one, and "3 minutes ago" cannot answer "which one was that".
+                         */
+                        h(
+                          'span',
+                          {
+                            className: 'dsh-rum-clock',
+                            role: 'cell',
+                            onMouseEnter: (event) => hint.show(absoluteStamp(entry.row.at), event),
+                            onMouseLeave: hint.hide,
+                          },
                           clockText(entry.row.at),
                         ),
                         h(
                           'span',
                           { className: 'dsh-rum-col', role: 'cell' },
                           /*
-                           * The first-token column reports whatever was actually measured. An
-                           * interrupted request that had already produced its first token shows
-                           * that real figure; one stopped before any token shows the dash.
+                           * A compaction has no first token, so the column is always the dash.
+                           * An interrupted request keeps whatever was measured: one stopped
+                           * after its first token shows that real figure.
                            */
-                          secondsText(entry.row.ttftMs, t),
+                          secondsText(entry.row.compaction === true ? null : entry.row.ttftMs, t),
                         ),
                         h(
                           'span',
-                          { className: 'dsh-rum-col dsh-rum-primary', role: 'cell' },
+                          {
+                            className: 'dsh-rum-col dsh-rum-primary',
+                            role: 'cell',
+                            /*
+                             * The hint names the model that served this row. A compaction's
+                             * summarizer reuses the routed model, and `compaction/summary`
+                             * records it, so both kinds of row can answer.
+                             */
+                            onMouseEnter: (event) => hint.show(modelHintText(entry.row, t), event),
+                            onMouseLeave: hint.hide,
+                          },
                           /*
-                           * A cancelled step never settled, so it has no generation speed. The
-                           * column says what happened instead of the same dash a step that has
-                           * not started would show — the speed column is where "this produced no
-                           * rate" belongs, while first-token and total still carry real figures.
+                           * A cancelled step never settled and a compaction never generates, so
+                           * neither has a rate. The column says what happened instead of the same
+                           * dash a request that has not started would show.
                            */
-                          entry.row.interrupted === true
-                            ? t('interrupted')
-                            : speedText(entry.row.speed, false, t),
+                          entry.row.compaction === true
+                            ? t('compactionSpeed')
+                            : entry.row.interrupted === true
+                              ? t('interrupted')
+                              : speedText(entry.row.speed, false, t),
+                        ),
+                        h(
+                          'span',
+                          {
+                            className: 'dsh-rum-col',
+                            role: 'cell',
+                            onMouseEnter: (event) => hint.show(tokensHintText(entry.row, t), event),
+                            onMouseLeave: hint.hide,
+                          },
+                          tokensText(entry.row.tokens, entry.row.estimated, t),
                         ),
                         h(
                           'span',
                           { className: 'dsh-rum-col', role: 'cell' },
-                          tokensText(entry.row.tokens, entry.row.estimated, t),
+                          secondsText(
+                            /*
+                             * A running compaction counts up from its own start, exactly as the
+                             * pill does, so the two figures cannot diverge; the frozen `wall`
+                             * takes over the moment the fold reports it.
+                             */
+                            entry.row.compaction === true && entry.row.running === true
+                              ? compactionSpan(entry.row, now)
+                              : entry.row.totalMs,
+                            t,
+                          ),
                         ),
-                        h('span', { className: 'dsh-rum-col', role: 'cell' }, secondsText(entry.row.totalMs, t)),
                         h(
                           'span',
                           { className: 'dsh-rum-col', role: 'cell' },

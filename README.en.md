@@ -95,75 +95,67 @@ Two further details make the edges actually coincide:
 Click the pill to open the drawer; click it again, or press Escape, or click outside, to
 close it. There is no hover-open and no tooltip.
 
-## Three states
+## Four states
 
-This plugin has two kinds of busy and one kind of idle, and all three look different:
+The plugin sorts "what is happening right now" into four phases, each with its own glyph and
+wording:
 
-| State | Decided by | Pill icon | Drawer header | Live row |
-| --- | --- | --- | --- | --- |
-| **Model writing** | `model` is `null` | ⚡ pulsing bolt | `Streaming` | yes (11 rows) |
-| **Tools running** | `model` set, `endTime` `null` | **pulsing T** | **`Calling tools`** | yes (11 rows) |
-| **Idle** | `endTime` set, or no running step | still | `last N` | no (10 rows) |
+| State | Decided by | Pill icon | Drawer header |
+| --- | --- | --- | --- |
+| **Model writing** | `model` is `null` | ⚡ pulsing | `Streaming` |
+| **Tools running** | `model` set, `endTime` `null` | T pulsing | `Calling tools` |
+| **Compacting** | newest compaction `running` | ≡ pulsing | `Compacting context` |
+| **Compacted** | compaction finished, no request since | ≡ still | `Context compacted` |
+| **Idle** | otherwise | ⚡ still | `Last N` |
 
-### Why the tool phase is its own state
+When a compaction finishes the pill says "Context compacted" and stops pulsing, and it stays
+that way until the next request starts — at which point the writing phase takes over again.
 
-This plugin measures **model output**, and `step/end` only arrives after the step's tool calls
-have all returned. Keying off `running` (which `step/end` clears) therefore kept the plugin in
-"streaming" for the entire tool phase after the reply had already finished: the bolt kept
-pulsing and the live row kept occupying an eleventh row.
+### Compaction is its own activity
 
-The field that separates the first two is `model`, which is `messageTime − startTime`:
+It belongs to no step: it is opened by `compaction/start` and closed by `compaction/end`, it
+lives on the turn's `compactions[]`, it runs between two steps, and it can take tens of
+seconds. No step is running during that time, so the pill used to keep showing the previous
+step's figures and the pause looked like a hang.
 
-- the model is still writing → `null`
-- `assistant/message` has landed → a fixed value, **even while tools run**
+It has no first token, no generation rate and no streamed token count — all three belong to a
+settled reply. So the drawer's columns are filled like this:
 
-`endTime` then separates the tool phase from idle. Both fields come from the Host's
-`sessionStats` fold — the same data the Statistics page renders.
+| Column | While compacting | Once compacted |
+| --- | --- | --- |
+| First token | `—` | `—` |
+| Speed | `Compaction` | `Compaction` |
+| Tokens | `—` | the real figure (e.g. `4.9k tok`) |
+| Time | counts up live | frozen at `wall` |
+| Amortised | `—` | `output ÷ wall` |
 
-### The live row stays through the tool phase
+The total is `wall` (`endTime − startTime`): a log fact, so a reload shows the same span.
+A compaction row is excluded from the footer average — its total is wall-clock time, and
+folding it into the mean would pull it toward a number describing neither case.
 
-The request is genuinely still in flight, so it keeps its row; only the marker changes from the
-bolt to a T, and the drawer header switches from "Streaming" to "Calling tools". That makes all
-three states distinguishable at a glance.
+### Which model compacts
 
-Both glyphs share **the same 14×14 svg box** (`.dsh-rum-trigger svg`) and the same `pulse`
-animation. Switching changes the shape and colour inside the box, never the box, so the status
-row does not shift. The T is drawn narrower on purpose so it does not read heavier than the bolt.
+The summarizer picks, in order: an explicitly configured `summarizationProvider/Model` → **the
+model the last request used** → the Agent's own model. The default is the second, because
+replaying the whole conversation is only cheap when it hits the same provider's KV cache.
 
-### Fallback
+`compaction/summary` records the model actually used, so **after** a compaction the real name
+is shown; **while** one runs the log has no such record yet, so the chat model is named, and
+the generic wording is the last resort.
 
-A composition without the statistics fold has no `model` to read. There, `partial` and a
-Trajectory request can only mean the model is writing, so the state is always "model writing" —
-it never degrades to idle just because the fold is missing.
+### Hover hints
 
-**Drawer** — slides up from the status row, right-aligned to that pill, `position: fixed`
-on `document.body` so no scroll container can clip it. Its material is the shipped
-statistics dialog's own, copied token for token: the `--dsw-specific-menu` fill
-(`#303136f0` in dark mode, i.e. nearly opaque, the same surface behind the native
-numbers), the `--dsw-menu-backdrop-filter` 40px/150% blur, `--dsw-elevation-prominent`
-stroke and shadow, `--dsw-radius-lg`, and 16px padding. It lists the last ten requests,
-newest first, with no explanatory footer:
+Every drawer column and every header carries a hint:
 
-| # | At | TTFT | Speed | Tokens | Time | Amortised |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | 18:42:07 | 2.3 s | 445 tok/s | 1024 tok | 4.6 s | 223 tok/s |
+| Where | Content |
+| --- | --- |
+| Clock column | the full timestamp `11-06 10:47:41.828` |
+| Speed column | the model that served that row |
+| Tokens column | input tokens and cache hit rate |
+| Headers | what the column measures (the `#` header draws the four state glyphs) |
 
-The `At` column is when the request was **issued** (`step/start`), matching the Statistics
-view. It is not the end time: a row stamped 18:42:07 with a 4.6 s total actually finished
-at 18:42:12, so an end stamp would read as "it finished then" and would also order the list
-by completion rather than by issue.
-
-A new request slides in at the top; the row that falls off the ten-row cap is removed in
-the **same frame** rather than fading out on its own. An exit phase would keep an
-eleventh row laid out for the animation's duration, growing the drawer by a row and
-shrinking it back — a visible height jump on every insertion. Opening the drawer also
-establishes a baseline instead of animating, so the whole list never slides in at once.
-
-While a step is streaming, the drawer shows it as a live row above the history, and the
-status reading switches to a live style. Under a rule below the history sits a summary
-row — the average of the visible requests, in the same grid so each mean lands under its
-column. A column with no samples (say no TTFT on an interrupted request) prints a dash
-rather than a misleading zero.
+The hints are a real overlay rather than `title`: `title` can only show plain text, and the
+`#` header has to draw glyphs.
 
 ## How the numbers are measured
 
