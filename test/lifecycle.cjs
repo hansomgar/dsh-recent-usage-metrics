@@ -3011,6 +3011,133 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     }
 
 
+
+    /*
+     * Model switches and cold caches, and how a row shows them.
+     *
+     * A `request/header` is written only when the routed model changes, so its presence inside a
+     * step's own window is the switch signal; its absence means the step reused what was already
+     * routed. Measured on a real session: 22 switches in 3202 steps, all 22 carrying a header.
+     */
+    {
+      const T = 40_000_000
+      statsSnapshot = {
+        turns: [
+          {
+            turn: 40,
+            steps: [
+              // Step 1: no header before it, but a reply already landed naming its model.
+              { turn: 40, step: 1, startTime: T, endTime: T + 5_000, ttft: 800, model: 4_000, output: 100, running: false, cacheRead: 99_000, context: 100_000, cacheHit: 0.99 },
+              // Step 2: a header inside its window -> this request switched models.
+              { turn: 40, step: 2, startTime: T + 6_000, endTime: T + 9_000, ttft: 700, model: 2_800, output: 80, running: false, cacheRead: 20_000, context: 100_000, cacheHit: 0.2 },
+              // Step 3: no header -> inherits step 2's model.
+              { turn: 40, step: 3, startTime: T + 12_000, endTime: T + 15_000, ttft: 600, model: 2_600, output: 60, running: false, cacheRead: 99_500, context: 100_000, cacheHit: 0.995 },
+            ],
+            events: [
+              { kind: 'request-header', time: T + 6_004, provider: 'buddy', model: 'deepseek-v4.1-flash' },
+            ],
+          },
+        ],
+      }
+      statsSteps.length = 0
+      const switchProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: false }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        // Step 1's reply landed first, so its model is known from the trajectory.
+        useTrajectory: () => ({
+          eventNodes: [
+            { kind: 'assistant', turn: 40, step: 1, providerMetadata: { provider: 'qodercn', model: 'dfmodel' } },
+          ],
+          requests: [],
+        }),
+        t,
+      }
+      const tree = await runtime.render(status.component, switchProps)
+      const rows = modelRows()
+
+      assert(
+        'a step with a header inside its window is marked as a switch',
+        (() => {
+          const row = rows.find((entry) => entry.key === '40:2')
+          return row !== undefined && row.switched === true && row.provider === 'buddy'
+        })(),
+      )
+      assert(
+        'a step with no header inherits the previous model and is not a switch',
+        (() => {
+          const row = rows.find((entry) => entry.key === '40:3')
+          return row !== undefined && row.switched === false && row.provider === 'buddy'
+        })(),
+      )
+      assert(
+        'a settled reply supplies the model for a turn whose first step has no header',
+        (() => {
+          const row = rows.find((entry) => entry.key === '40:1')
+          return row !== undefined && row.provider === 'qodercn' && row.model === 'dfmodel'
+        })(),
+      )
+
+      // The rendered attributes, which is what the colour rules key on.
+      const opener = findAll(tree, (el) => String(el.props.className ?? '').includes('dsh-rum-trigger'))[0]
+      if (opener !== undefined) opener.props.onClick({ stopPropagation() {}, preventDefault() {} })
+      const opened = await runtime.render(status.component, switchProps)
+      const items = findAll(opened, (el) => String(el.props.className ?? '').includes('dsh-rum-item'))
+      const byIndex = (index) => {
+        const row = items.find((el) =>
+          findAll(el, (cell) => String(cell.props.className ?? '').includes('dsh-rum-index')).some(
+            (cell) => String(textOf(cell)).trim() === String(index),
+          ),
+        )
+        return row
+      }
+      assert(
+        'the switched row carries the switch attribute',
+        byIndex(2) !== undefined && byIndex(2).props['data-switched'] === 'true',
+      )
+      assert(
+        'a cold row carries the low-cache attribute',
+        /*
+         * Step 2 reports 20% and also switched. Both attributes are set; the stylesheet makes the
+         * warn colour win while the left bar keeps the switch colour, so neither signal is lost.
+         */
+        byIndex(2) !== undefined && byIndex(2).props['data-lowcache'] === 'true',
+      )
+      assert(
+        'a warm row carries neither attribute',
+        (() => {
+          const row = byIndex(3)
+          return (
+            row !== undefined &&
+            row.props['data-switched'] === undefined &&
+            row.props['data-lowcache'] === undefined
+          )
+        })(),
+      )
+      assert(
+        'an unreported cache rate is not treated as zero',
+        /*
+         * trae folds cache reads into its input count and reports no `cacheReadTokens`. Reading
+         * that as "0%" would flag every one of its rows, so only a reported rate can flag.
+         */
+        (() => {
+          const start = source.indexOf('function isLowCacheHit(')
+          if (start < 0) return false
+          const body = source.slice(start, start + 520)
+          return /row\.compaction === true\) return false/.test(body) && /if \(rate === null\) return false/.test(body)
+        })(),
+      )
+      assert(
+        'the threshold sits at 90 percent',
+        /const LOW_CACHE_HIT = 0\.9/.test(source),
+      )
+    }
+
+
     /*
      * Model attribution, per step.
      *

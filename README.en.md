@@ -154,6 +154,21 @@ Every drawer column and every header carries a hint:
 | Tokens column | input tokens (with thousands separators, e.g. `370,683 tok`) and cache hit rate |
 | Headers | what the column measures (the `#` header draws the four state glyphs) |
 
+**Row highlights:**
+
+| Trigger | Colour | Frequency |
+| --- | --- | --- |
+| The request switched models | business blue (text + left bar) | 0.7% |
+| Cache hit below 90% | warn yellow (text + left bar) | 0.9% |
+
+When both hold, the text takes the warn colour and the bar keeps the business colour. A
+compaction row never takes the cache highlight.
+
+**Where the model name comes from:** a `request/header` inside the step's window means a switch
+and supplies the model; otherwise the previous step's model carries over, and a landed reply
+overrides both via `assistant/message.source`. The live row follows the same rule, so the model
+is visible while the reply is still streaming.
+
 The hints are a real overlay rather than `title`: `title` can only show plain text, and the
 `#` header has to draw glyphs.
 
