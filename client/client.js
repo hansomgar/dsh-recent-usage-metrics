@@ -119,9 +119,13 @@ window.__ModuleLoader__.load({
       hintTtft: '从发出到收到第一个 token 的耗时',
       hintSpeed: '模型生成速度 = 输出 token ÷ 解码时长',
       hintTokens: '模型本次生成的 token 数',
-      hintTotal: '请求耗时：从发出请求一直到模型输出结束',
+      hintTotal: '请求耗时：从发出请求一直到模型输出结束，不含工具调用时间',
       hintAmortized: '输出 token ÷ 总用时，包含请求时间和响应时间，更加能表明本地到模型输出完整链路的速度',
       tokensHint: '输入 {input} · 缓存命中 {hit}',
+      toolHintOne: '工具调用 {count} 次 · {total}',
+      toolHintTwo: '工具调用 {count} 次 · 串行 {total} · 并行合并 {wall}',
+      toolHintNone: '无工具调用',
+      toolHintCompaction: '压缩上下文不计工具时间',
     }
 
     const en = {
@@ -177,9 +181,13 @@ window.__ModuleLoader__.load({
       hintTtft: 'Time from issuing the request to receiving its first token',
       hintSpeed: 'Generation speed = output tokens ÷ decode time',
       hintTokens: 'Tokens this reply generated',
-      hintTotal: 'Request time: from issuing the request until the model finished replying',
+      hintTotal: 'Request time: from issuing the request until the model finished replying, not counting tool calls',
       hintAmortized: 'Output tokens ÷ total time, including both queueing and response — the throughput of the whole local-to-model path',
       tokensHint: 'Input {input} · cache hit {hit}',
+      toolHintOne: 'Tool calls: {count} · {total}',
+      toolHintTwo: 'Tool calls: {count} · serial {total} · parallel-merged {wall}',
+      toolHintNone: 'No tool calls',
+      toolHintCompaction: 'A compaction spends no time on tools',
     }
 
     const STYLE_TEXT = `
@@ -449,6 +457,26 @@ window.__ModuleLoader__.load({
 .dsh-rum-clock {
   color: var(--dsw-alias-label-tertiary);
   text-align: left;
+}
+/*
+ * A highlighted row colours EVERY cell, not just the ones that inherit.
+ *
+ * The index, clock and primary cells each set their own colour, so without this they stay
+ * grey inside a blue or yellow row and the highlight reads as a stray word rather than as a
+ * whole row. Their own rules stay in place for every unhighlighted row.
+ *
+ * The specificity is deliberately higher than each of those cell rules: one class plus two
+ * attribute selectors beats a plain class selector.
+ */
+.dsh-rum-item[data-switched="true"] .dsh-rum-col,
+.dsh-rum-item[data-switched="true"] .dsh-rum-index,
+.dsh-rum-item[data-switched="true"] .dsh-rum-clock {
+  color: inherit;
+}
+.dsh-rum-item[data-lowcache="true"] .dsh-rum-col,
+.dsh-rum-item[data-lowcache="true"] .dsh-rum-index,
+.dsh-rum-item[data-lowcache="true"] .dsh-rum-clock {
+  color: inherit;
 }
 /*
  * The index cells are flex boxes so a row number and the streaming dot share one alignment
@@ -1084,6 +1112,16 @@ window.__ModuleLoader__.load({
         provider: null,
         context: numberOrNull(stats.context),
         cacheRead: numberOrNull(stats.cacheRead),
+        /*
+         * Tool time, for the total column hint. `tool` sums each call from its dispatch to its
+         * result, so three parallel 10 s tools report 30 s; `toolWall` unions the intervals, so
+         * the same three report 10 s. Both are reported because the gap between them is exactly
+         * how much the parallelism bought.
+         */
+        toolMs: numberOrNull(stats.tool),
+        toolWallMs: numberOrNull(stats.toolWall),
+        /** How many calls the step made, from the fold's own call list. */
+        toolCalls: Array.isArray(stats.calls) ? stats.calls.length : null,
         cacheHit: numberOrNull(stats.cacheHit),
       }
     }
@@ -1822,6 +1860,42 @@ window.__ModuleLoader__.load({
       if (model === null && provider === null) return t('none')
       if (model === null) return provider
       return provider === null ? model : `${provider} / ${model}`
+    }
+
+    /**
+     * The total column's hint: how much of the request was tool time.
+     *
+     * Two figures, because they answer different questions. `tool` adds up each call, so it
+     * says how much tool work there was; `toolWall` unions the intervals, so it says how much
+     * wall time the tools occupied. Three parallel 10 s calls are 30 s of work in 10 s of
+     * elapsed time, and the gap is what parallelism bought.
+     *
+     * Neither is part of the total above, which is model time only — the header says so.
+     */
+    function toolHintText(row, t) {
+      if (row.compaction === true) return t('toolHintCompaction')
+      const calls = numberOrNull(row.toolCalls)
+      const serial = numberOrNull(row.toolMs)
+      if (serial === null && calls === null) return t('toolHintNone')
+      if (serial === null) return t('toolHintNone')
+      const wall = numberOrNull(row.toolWallMs)
+      const count = calls === null ? 0 : calls
+      if (wall === null || wall === serial) {
+        return t('toolHintOne', { count, total: secondsValue(serial, t) })
+      }
+      return t('toolHintTwo', {
+        count,
+        total: secondsValue(serial, t),
+        wall: secondsValue(wall, t),
+      })
+    }
+
+    /** A duration as the hint spells it: seconds, one decimal, no unit label of its own. */
+    function secondsValue(ms, t) {
+      if (ms === null || ms === undefined || !Number.isFinite(ms)) return t('none')
+      const seconds = ms / 1000
+      const text = seconds < 100 ? seconds.toFixed(1) : String(Math.round(seconds))
+      return `${text} s`
     }
 
     /** The tokens column's hint: the input side, which the cell itself does not show. */
@@ -3787,7 +3861,13 @@ window.__ModuleLoader__.load({
                           h('span', { className: 'dsh-rum-col', role: 'cell' }, tokensText(live.tokens, live.estimated === true, t)),
                           h(
                             'span',
-                            { className: 'dsh-rum-col', role: 'cell' },
+                            {
+                              className: 'dsh-rum-col',
+                              role: 'cell',
+                              /* Same hint as the numbered rows, so the meaning never changes. */
+                              onMouseEnter: (event) => hint.show(toolHintText(live, t), event),
+                              onMouseLeave: hint.hide,
+                            },
                             secondsText(
                               live.compaction !== null && live.compaction !== undefined
                                 ? compactionSpan(live.compaction, now)
@@ -3902,7 +3982,17 @@ window.__ModuleLoader__.load({
                         ),
                         h(
                           'span',
-                          { className: 'dsh-rum-col', role: 'cell' },
+                          {
+                            className: 'dsh-rum-col',
+                            role: 'cell',
+                            /*
+                             * The hint explains how much of the request was tool time. The figure
+                             * in the cell deliberately excludes it, which is exactly why the two
+                             * need to be shown together.
+                             */
+                            onMouseEnter: (event) => hint.show(toolHintText(entry.row, t), event),
+                            onMouseLeave: hint.hide,
+                          },
                           secondsText(
                             /*
                              * A running compaction counts up from its own start, exactly as the

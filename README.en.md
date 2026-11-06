@@ -152,6 +152,7 @@ Every drawer column and every header carries a hint:
 | Clock column | the full timestamp `11-06 10:47:41.828` |
 | Speed column | the model that served that row |
 | Tokens column | input tokens (with thousands separators, e.g. `370,683 tok`) and cache hit rate |
+| Time column | how much of the request was tool time, both summed and parallel-merged |
 | Headers | what the column measures (the `#` header draws the four state glyphs) |
 
 **Row highlights:**

@@ -3012,6 +3012,158 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 
+
+    /*
+     * The total column's tool hint, and the whole-row highlight fix.
+     *
+     * The cell figure is model time only, so the hint's job is to say how much tool work sat
+     * beside it — and to distinguish the work done from the wall time it occupied.
+     */
+    {
+      const T = 50_000_000
+      statsSnapshot = {
+        turns: [
+          {
+            turn: 50,
+            steps: [
+              {
+                turn: 50, step: 1, startTime: T, endTime: T + 20_000, ttft: 900, model: 5_000, output: 120,
+                running: false, tool: 30_000, toolWall: 10_000, calls: [{}, {}, {}],
+              },
+              {
+                turn: 50, step: 2, startTime: T + 30_000, endTime: T + 34_000, ttft: 800, model: 4_000, output: 90,
+                running: false, tool: null, toolWall: null, calls: [],
+              },
+              {
+                turn: 50, step: 3, startTime: T + 40_000, endTime: T + 50_000, ttft: 700, model: 6_000, output: 60,
+                running: false, tool: 8_000, toolWall: 8_000, calls: [{}],
+              },
+            ],
+            events: [],
+          },
+        ],
+      }
+      statsSteps.length = 0
+      const toolProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: false }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        useTrajectory: () => ({ eventNodes: [], requests: [] }),
+        t,
+      }
+      await runtime.render(status.component, toolProps)
+      const rows = modelRows()
+      const first = rows.find((entry) => entry.key === '50:1')
+      const none = rows.find((entry) => entry.key === '50:2')
+      const single = rows.find((entry) => entry.key === '50:3')
+
+      assert(
+        'the row carries both tool-time figures and the call count',
+        first !== undefined && first.toolMs === 30_000 && first.toolWallMs === 10_000 && first.toolCalls === 3,
+      )
+      assert(
+        'a row without tools reports neither figure',
+        none !== undefined && none.toolMs === null && none.toolWallMs === null,
+      )
+
+      /**
+       * Evaluate the plugin's own hint builder.
+       *
+       * Only the dictionary calls are replaced, with a stub that records the key and its params;
+       * the branching under test is left untouched, so a regression in it is caught. `secondsValue`
+       * is supplied separately because it is a pure formatter the stub can stand in for.
+       */
+      const hint = (row) => {
+        const start = source.indexOf('function toolHintText(')
+        const end = source.indexOf('function secondsValue(', start)
+        if (start < 0 || end < 0) return null
+        const bodyText = source
+          .slice(start, end)
+          .replace('function toolHintText(row, t)', 'return function (row, t)')
+        try {
+          // eslint-disable-next-line no-new-func
+          /*
+           * `numberOrNull` is the plugin's guard for "a reported number or null"; the builder
+           * depends on it, so it is supplied alongside the formatter.
+           */
+          const numberOrNull = (value) =>
+            typeof value === 'number' && Number.isFinite(value) ? value : null
+          return new Function('secondsValue', 'numberOrNull', bodyText)(
+            (ms) => `${(ms / 1000).toFixed(1)} s`,
+            numberOrNull,
+          )
+        } catch {
+          return null
+        }
+      }
+      const stubT = (key, params) => {
+        if (params === undefined) return key
+        return `${key} ${JSON.stringify(params)}`
+      }
+      const builder = hint()
+      assert(
+        'the tool hint builder can be evaluated on its own',
+        typeof builder === 'function',
+      )
+      const parallel = builder === null ? '' : builder({ toolMs: 30_000, toolWallMs: 10_000, toolCalls: 3 }, stubT)
+      const nothing = builder === null ? '' : builder({ toolMs: null, toolWallMs: null, toolCalls: null }, stubT)
+      const one = builder === null ? '' : builder({ toolMs: 8_000, toolWallMs: 8_000, toolCalls: 1 }, stubT)
+      const compactionRow = builder === null ? '' : builder({ compaction: true }, stubT)
+
+      assert(
+        'the parallel case reports the summed work and the merged wall time as two figures',
+        parallel.includes('toolHintTwo') && parallel.includes('30.0 s') && parallel.includes('10.0 s'),
+      )
+      assert(
+        'a row with no tools says so instead of printing a zero',
+        nothing === 'toolHintNone',
+      )
+      assert(
+        'a single call collapses to one figure rather than repeating itself',
+        one.startsWith('toolHintOne') && one.includes('8.0 s') && !one.includes('toolHintTwo'),
+      )
+      assert(
+        'a compaction says it spends no time on tools',
+        compactionRow === 'toolHintCompaction',
+      )
+
+      assert(
+        'the total header now states that tool time is excluded',
+        (() => {
+          const zh = source.slice(source.indexOf('const zh = {'), source.indexOf('const en = {'))
+          const en = source.slice(source.indexOf('const en = {'), source.indexOf('const STYLE_TEXT'))
+          return (
+            /hintTotal: .*不含工具调用时间/.test(zh) &&
+            /hintTotal: .*not counting tool calls/.test(en)
+          )
+        })(),
+      )
+    }
+
+    /*
+     * A highlighted row colours every cell.
+     *
+     * The index, clock and primary cells each declare their own colour, so a row-level colour
+     * alone left those three grey — the highlight looked like a stray word rather than a row.
+     * The stylesheet must therefore override each of them under both attributes.
+     */
+    {
+      const css = styleEls[0].textContent
+      for (const attr of ['data-switched="true"', 'data-lowcache="true"']) {
+        assert(
+          'the ' + (attr.includes('switched') ? 'switch' : 'cold') + ' highlight recolours every cell kind',
+          new RegExp(`\\.dsh-rum-item\\[${attr}\\] \\.dsh-rum-col`).test(css) &&
+            new RegExp(`\\.dsh-rum-item\\[${attr}\\] \\.dsh-rum-index`).test(css) &&
+            new RegExp(`\\.dsh-rum-item\\[${attr}\\] \\.dsh-rum-clock`).test(css),
+        )
+      }
+    }
+
+
     /*
      * Model switches and cold caches, and how a row shows them.
      *
