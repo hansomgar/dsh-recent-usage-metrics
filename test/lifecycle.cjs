@@ -2942,6 +2942,75 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 
+
+    /*
+     * Thousands separators in the tokens hint.
+     *
+     * The cell abbreviates so the drawer stays aligned; the hint has room and must spell the
+     * exact input out, because `370k` and `371k` hide a real difference.
+     */
+    {
+      const body = (() => {
+        const start = source.indexOf('function tokensExact(')
+        return start < 0 ? '' : source.slice(start, start + 900)
+      })()
+      assert(
+        'the tokens hint groups thousands',
+        /grouped \+= ','/.test(body),
+      )
+      /*
+       * Run the grouping as the plugin does, over values taken from a real log, so the assertion
+       * is behavioural rather than a pattern match on the source.
+       */
+      /*
+       * Run the plugin's OWN function, extracted from the source, rather than a copy of its
+       * algorithm: a copy would keep passing after the real one regressed.
+       */
+      const group = (() => {
+        const start = source.indexOf('function tokensExact(')
+        if (start < 0) return () => ''
+        const end = source.indexOf('function clockText(', start)
+        const bodyText = source.slice(start, end < 0 ? start + 900 : end)
+        /*
+         * Rewrite the two dictionary calls into plain expressions so the returned function is
+         * observable: the grouping itself is what is under test, not the wording around it.
+         */
+        const callable = bodyText
+          .replace('function tokensExact(value, t)', 'return function (value, t)')
+          .replace("t('tokensUnit', { value: value < 0 ? `-${grouped}` : grouped })", 'value < 0 ? `-${grouped}` : grouped')
+          .replace("t('none')", "'—'")
+        try {
+          return new Function(callable)()
+        } catch {
+          return () => ''
+        }
+      })()
+      const cases = [
+        [0, '0'],
+        [999, '999'],
+        [1000, '1,000'],
+        [1914, '1,914'],
+        [9472, '9,472'],
+        [370683, '370,683'],
+        [1234567, '1,234,567'],
+      ]
+      assert(
+        'the grouping matches the locale-independent form at every size that occurs',
+        cases.every(([value, expected]) => group(value) === expected),
+      )
+      assert(
+        'the hint uses the exact form while the cell keeps its short one',
+        /*
+         * Both paths must stay distinct: the cell is `tokensText` (which may abbreviate), the
+         * hint is `tokensExact`. Pointing both at the same helper would silently undo this.
+         */
+        /const input = row\.context === null \|\| row\.context === undefined \? none : tokensExact\(row\.context, t\)/.test(
+          source,
+        ) && /tokensText\(entry\.row\.tokens, entry\.row\.estimated, t\)/.test(source),
+      )
+    }
+
+
     /*
      * Model attribution, per step.
      *

@@ -1529,6 +1529,29 @@ window.__ModuleLoader__.load({
       return approximate ? t('approxTokensUnit', { value: rounded }) : t('tokensUnit', { value: rounded })
     }
 
+    /**
+     * A whole token count with thousands separators, for a hover hint.
+     *
+     * The cell itself has to stay narrow, so it abbreviates (`4.9k tok`). The hint has room, and
+     * a reader comparing an input of 370683 against one of 1914 needs the exact digits — `370k`
+     * and `371k` would hide the difference.
+     *
+     * The separator is a comma in both languages this plugin ships, so it is written out rather
+     * than derived from the host locale: that keeps the hint identical in zh and en, and avoids
+     * depending on a locale tag the slot props do not provide.
+     */
+    function tokensExact(value, t) {
+      if (value === null || value === undefined || !Number.isFinite(value)) return t('none')
+      const digits = String(Math.round(Math.abs(value)))
+      let grouped = ''
+      for (let i = 0; i < digits.length; i += 1) {
+        const fromEnd = digits.length - i
+        grouped += digits[i]
+        if (fromEnd > 1 && (fromEnd - 1) % 3 === 0) grouped += ','
+      }
+      return t('tokensUnit', { value: value < 0 ? `-${grouped}` : grouped })
+    }
+
     function clockText(at) {
       const date = new Date(at)
       if (Number.isNaN(date.getTime())) return '—'
@@ -1650,7 +1673,11 @@ window.__ModuleLoader__.load({
     /** The tokens column's hint: the input side, which the cell itself does not show. */
     function tokensHintText(row, t) {
       const none = t('none')
-      const input = row.context === null || row.context === undefined ? none : tokensText(row.context, false, t)
+      /*
+       * The input is spelled out with thousands separators; the cell above it abbreviates. The
+       * hint exists precisely for the cases where the abbreviation loses information.
+       */
+      const input = row.context === null || row.context === undefined ? none : tokensExact(row.context, t)
       const hit =
         row.cacheHit === null || row.cacheHit === undefined
           ? none
