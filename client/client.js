@@ -114,7 +114,9 @@ window.__ModuleLoader__.load({
       hoursAgo: '{count} 小时前',
       // Column-header hints. `{bolt}` / `{tools}` / `{compact}` are replaced by the glyphs
       // themselves, which is why these are rendered by the tooltip component and not by title.
-      hintIndex: '行号：1–10 为已完成的最近记录，{bolt} 为模型输出中，{tools} 为工具调用中，{compact} 为压缩上下文中',
+      hintIndex:
+        '行号：1–10 为已完成的最近记录，{bolt} 为模型输出中，{tools} 为工具调用中，{compact} 为压缩上下文中',
+      hintColour: '整行黄色表示缓存命中过低，蓝色表示这一步切换了模型',
       hintTime: '请求发出的时刻（本地时间）',
       hintTtft: '从发出到收到第一个 token 的耗时',
       hintSpeed: '模型生成速度 = 输出 token ÷ 解码时长',
@@ -176,7 +178,9 @@ window.__ModuleLoader__.load({
       secondsAgo: '{count}s ago',
       minutesAgo: '{count}m ago',
       hoursAgo: '{count}h ago',
-      hintIndex: 'Row number: 1–10 are the most recent finished records; {bolt} is a model reply, {tools} is a tool call, {compact} is a context compaction',
+      hintIndex:
+        'Row number: 1–10 are the most recent finished records; {bolt} is a model reply, {tools} is a tool call, {compact} is a context compaction',
+      hintColour: 'A yellow row means a low cache hit; a blue row means this step switched models',
       hintTime: 'When the request was issued (local time)',
       hintTtft: 'Time from issuing the request to receiving its first token',
       hintSpeed: 'Generation speed = output tokens ÷ decode time',
@@ -638,6 +642,39 @@ window.__ModuleLoader__.load({
 }
 .dsh-rum-tip .dsh-rum-tip-icon {
   color: var(--dsw-alias-brand-primary);
+}
+/*
+ * The index hint is two lines: what the glyphs mean, then what the row colours mean.
+ *
+ * The colour line leads with two swatches instead of naming the hues, so a reader matches a
+ * row against the legend by colour rather than by translating a word. The swatches take the
+ * same tokens the rows take, so the two can never disagreement.
+ */
+.dsh-rum-tip-body {
+  display: block;
+}
+.dsh-rum-tip-line {
+  display: block;
+}
+.dsh-rum-tip-line + .dsh-rum-tip-line {
+  margin-top: 5px;
+}
+.dsh-rum-tip-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 3px;
+  vertical-align: 0;
+}
+.dsh-rum-tip-swatch + .dsh-rum-tip-swatch {
+  margin-left: 6px;
+}
+.dsh-rum-tip-swatch[data-hue="lowcache"] {
+  background: var(--dsw-alias-state-warn-primary, var(--dsw-alias-state-warn-label));
+}
+.dsh-rum-tip-swatch[data-hue="switched"] {
+  background: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary));
 }
 .dsh-rum-empty {
   flex: 1 1 auto;
@@ -1938,7 +1975,23 @@ window.__ModuleLoader__.load({
         else if (token === '{compact}') nodes.push(glyph(CompactionIcon))
         else nodes.push(token)
       }
-      return h('span', null, ...nodes)
+      /*
+       * The colour legend is its own line, with the two highlights drawn as swatches rather than
+       * named. A reader can then match a row to the legend by colour instead of translating a
+       * word, and the swatches use the same tokens the rows do, so the two cannot drift.
+       */
+      return h(
+        'span',
+        { className: 'dsh-rum-tip-body' },
+        h('span', { className: 'dsh-rum-tip-line' }, ...nodes),
+        h(
+          'span',
+          { className: 'dsh-rum-tip-line' },
+          h('span', { className: 'dsh-rum-tip-swatch', 'data-hue': 'lowcache' }),
+          h('span', { className: 'dsh-rum-tip-swatch', 'data-hue': 'switched' }),
+          t('hintColour'),
+        ),
+      )
     }
 
     /**

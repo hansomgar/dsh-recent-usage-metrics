@@ -153,7 +153,7 @@ Every drawer column and every header carries a hint:
 | Speed column | the model that served that row |
 | Tokens column | input tokens (with thousands separators, e.g. `370,683 tok`) and cache hit rate |
 | Time column | how much of the request was tool time, both summed and parallel-merged |
-| Headers | what the column measures (the `#` header draws the four state glyphs) |
+| Headers | what the column measures (the `#` header draws the four state glyphs and swatches for the two row colours) |
 
 **Row highlights:**
 

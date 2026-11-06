@@ -3013,6 +3013,52 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 
+
+    /*
+     * The index header colour legend.
+     *
+     * The hint already named the three state glyphs; it now also explains the two row colours,
+     * and draws them as swatches so a reader matches a row by colour rather than by translating
+     * a word. The swatches take the same tokens the rows take.
+     */
+    {
+      const zh = source.slice(source.indexOf('const zh = {'), source.indexOf('const en = {'))
+      const en = source.slice(source.indexOf('const en = {'), source.indexOf('const STYLE_TEXT'))
+      assert(
+        'both dictionaries describe the two row colours',
+        /hintColour:/.test(zh) &&
+          /hintColour:/.test(en) &&
+          /黄色表示缓存命中过低/.test(zh) &&
+          /蓝色表示这一步切换了模型/.test(zh) &&
+          /yellow row means a low cache hit/i.test(en) &&
+          /blue row means this step switched models/i.test(en),
+      )
+      assert(
+        'the glyph line and the colour line are separate blocks',
+        /className: 'dsh-rum-tip-line'/.test(source) &&
+          source.indexOf("t('hintColour')") > source.indexOf('...nodes'),
+      )
+      assert(
+        'the legend draws the two colours instead of naming them',
+        /'data-hue': 'lowcache'/.test(source) &&
+          /'data-hue': 'switched'/.test(source) &&
+          /data-hue="lowcache"/.test(styleEls[0].textContent) &&
+          /data-hue="switched"/.test(styleEls[0].textContent),
+      )
+      assert(
+        'the swatches reuse the row tokens so the legend cannot drift from the rows',
+        (() => {
+          const css = styleEls[0].textContent
+          const swatchWarn = /\.dsh-rum-tip-swatch\[data-hue="lowcache"\]\s*\{[^}]*state-warn-primary/.test(css)
+          const swatchBusiness = /\.dsh-rum-tip-swatch\[data-hue="switched"\]\s*\{[^}]*state-business-primary/.test(css)
+          const rowWarn = /\.dsh-rum-item\[data-lowcache="true"\]\s*\{[^}]*state-warn-primary/.test(css)
+          const rowBusiness = /\.dsh-rum-item\[data-switched="true"\]\s*\{[^}]*state-business-primary/.test(css)
+          return swatchWarn && swatchBusiness && rowWarn && rowBusiness
+        })(),
+      )
+    }
+
+
     /*
      * The total column's tool hint, and the whole-row highlight fix.
      *
