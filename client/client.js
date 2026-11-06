@@ -114,8 +114,13 @@ window.__ModuleLoader__.load({
       hoursAgo: '{count} 小时前',
       // Column-header hints. `{bolt}` / `{tools}` / `{compact}` are replaced by the glyphs
       // themselves, which is why these are rendered by the tooltip component and not by title.
-      hintIndex:
-        '行号：1–10 为已完成的最近记录，{bolt} 为模型输出中，{tools} 为工具调用中，{compact} 为压缩上下文中',
+      /*
+       * The index hint is three lines: what the column holds, what the glyphs mean, then what
+       * the row colours mean. Splitting them keeps each line short enough to read at a glance
+       * instead of being one long sentence the eye has to parse.
+       */
+      hintIndexRows: '行号：1–10 为已完成的最近记录',
+      hintIndexGlyphs: '{bolt} 为模型输出中，{tools} 为工具调用中，{compact} 为压缩上下文中',
       hintColour: '整行黄色表示缓存命中过低，蓝色表示这一步切换了模型',
       hintTime: '请求发出的时刻（本地时间）',
       hintTtft: '从发出到收到第一个 token 的耗时',
@@ -178,8 +183,8 @@ window.__ModuleLoader__.load({
       secondsAgo: '{count}s ago',
       minutesAgo: '{count}m ago',
       hoursAgo: '{count}h ago',
-      hintIndex:
-        'Row number: 1–10 are the most recent finished records; {bolt} is a model reply, {tools} is a tool call, {compact} is a context compaction',
+      hintIndexRows: 'Row number: 1–10 are the most recent finished records',
+      hintIndexGlyphs: '{bolt} is a model reply, {tools} is a tool call, {compact} is a context compaction',
       hintColour: 'A yellow row means a low cache hit; a blue row means this step switched models',
       hintTime: 'When the request was issued (local time)',
       hintTtft: 'Time from issuing the request to receiving its first token',
@@ -1961,29 +1966,33 @@ window.__ModuleLoader__.load({
     function indexHint(t) {
       const glyph = (Icon) => h(Icon, { className: 'dsh-rum-tip-icon' })
       /*
-       * Split on every placeholder first, then walk the pieces: a string piece is literal text,
-       * a placeholder becomes its glyph. Walking once over a token list is simpler to follow
-       * than nesting one split per placeholder.
+       * Turn one sentence into elements, replacing each glyph placeholder with the glyph itself.
+       * A single pass over a token list is simpler to follow than nesting one split per
+       * placeholder, and it keeps the placeholders in whatever order a translation uses.
        */
-      const tokens = t('hintIndex').split(/(\{bolt\}|\{tools\}|\{compact\})/)
-      const nodes = []
-      for (let i = 0; i < tokens.length; i += 1) {
-        const token = tokens[i]
-        if (token === '') continue
-        if (token === '{bolt}') nodes.push(glyph(BoltIcon))
-        else if (token === '{tools}') nodes.push(glyph(ToolIcon))
-        else if (token === '{compact}') nodes.push(glyph(CompactionIcon))
-        else nodes.push(token)
+      const withGlyphs = (text) => {
+        const tokens = text.split(/(\{bolt\}|\{tools\}|\{compact\})/)
+        const nodes = []
+        for (const token of tokens) {
+          if (token === '') continue
+          if (token === '{bolt}') nodes.push(glyph(BoltIcon))
+          else if (token === '{tools}') nodes.push(glyph(ToolIcon))
+          else if (token === '{compact}') nodes.push(glyph(CompactionIcon))
+          else nodes.push(token)
+        }
+        return nodes
       }
       /*
-       * The colour legend is its own line, with the two highlights drawn as swatches rather than
-       * named. A reader can then match a row to the legend by colour instead of translating a
-       * word, and the swatches use the same tokens the rows do, so the two cannot drift.
+       * Three lines: what the column holds, what the glyphs mean, then what the row colours mean.
+       * The colour line leads with two swatches instead of naming the hues, so a reader matches a
+       * row against the legend by colour rather than by translating a word. The swatches take the
+       * same tokens the rows take, so the two cannot drift apart.
        */
       return h(
         'span',
         { className: 'dsh-rum-tip-body' },
-        h('span', { className: 'dsh-rum-tip-line' }, ...nodes),
+        h('span', { className: 'dsh-rum-tip-line' }, t('hintIndexRows')),
+        h('span', { className: 'dsh-rum-tip-line' }, ...withGlyphs(t('hintIndexGlyphs'))),
         h(
           'span',
           { className: 'dsh-rum-tip-line' },
@@ -3912,15 +3921,17 @@ window.__ModuleLoader__.load({
                               : speedText(live.speed, live.estimated === true, t),
                           ),
                           h('span', { className: 'dsh-rum-col', role: 'cell' }, tokensText(live.tokens, live.estimated === true, t)),
+                          /*
+                           * No hint on the live row's total.
+                           *
+                           * A running request has not reported its tool time yet, so the only
+                           * possible readings are "no tools" or a partial count — both would be
+                           * wrong about a request that is still going. The hint appears when the
+                           * row settles and the fold has the real figures.
+                           */
                           h(
                             'span',
-                            {
-                              className: 'dsh-rum-col',
-                              role: 'cell',
-                              /* Same hint as the numbered rows, so the meaning never changes. */
-                              onMouseEnter: (event) => hint.show(toolHintText(live, t), event),
-                              onMouseLeave: hint.hide,
-                            },
+                            { className: 'dsh-rum-col', role: 'cell' },
                             secondsText(
                               live.compaction !== null && live.compaction !== undefined
                                 ? compactionSpan(live.compaction, now)

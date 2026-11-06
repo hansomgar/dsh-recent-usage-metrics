@@ -3034,9 +3034,30 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           /blue row means this step switched models/i.test(en),
       )
       assert(
-        'the glyph line and the colour line are separate blocks',
-        /className: 'dsh-rum-tip-line'/.test(source) &&
-          source.indexOf("t('hintColour')") > source.indexOf('...nodes'),
+        'the index hint is three separate lines',
+        /*
+         * Rows, glyphs, colours — each on its own line so the eye reads one idea at a time
+         * instead of parsing a single long sentence.
+         */
+        /hintIndexRows:/.test(zh) &&
+          /hintIndexGlyphs:/.test(zh) &&
+          /hintIndexRows:/.test(en) &&
+          /hintIndexGlyphs:/.test(en) &&
+          (source.match(/className: 'dsh-rum-tip-line'/g) || []).length >= 3 &&
+          source.indexOf("t('hintColour')") > source.indexOf("t('hintIndexGlyphs')"),
+      )
+      assert(
+        'the live row carries no tool hint on its total',
+        /*
+         * A request that is still running has not reported its tool time, so any hint would
+         * read as "no tools" or a partial count about a request that is still going. The hint
+         * appears once the row settles.
+         */
+        !/hint\.show\(toolHintText\(live, t\)/.test(source),
+      )
+      assert(
+        'the settled rows keep the tool hint',
+        /hint\.show\(toolHintText\(entry\.row, t\)/.test(source),
       )
       assert(
         'the legend draws the two colours instead of naming them',
