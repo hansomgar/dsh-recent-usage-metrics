@@ -3233,6 +3233,99 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 
+
+    /*
+     * The live row's tokens hint while its tools run.
+     *
+     * `assistant/message` lands BEFORE a step's tool calls, and it is what carries the usage — so
+     * by the time the T marker is pulsing, the input and cache figures are already final. The live
+     * reading must therefore hand them to the hint instead of leaving it with two dashes.
+     */
+    {
+      const T = 80_000_000
+      statsSnapshot = {
+        turns: [
+          {
+            turn: 80,
+            steps: [
+              {
+                turn: 80, step: 1, startTime: T, endTime: null, ttft: 900, model: 5_000, output: 120,
+                decode: 4_000, tps: 30, running: true,
+                // Final by the time the tools run: the message that reported them already landed.
+                context: 585_856, cacheRead: 585_344, cacheHit: 0.9991,
+                cacheWrite: null, tool: null, toolWall: null,
+                calls: [{ callId: 'a', name: 'bash', startedAt: T + 5_500, endedAt: null }],
+              },
+            ],
+            events: [],
+          },
+        ],
+      }
+      statsSteps.length = 0
+      const hintProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: true }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        useTrajectory: () => ({ eventNodes: [], requests: [] }),
+        t,
+      }
+      await runtime.render(status.component, hintProps)
+
+      /*
+       * Read the live reading that the component actually built. It is published on the trigger
+       * for exactly this kind of assertion.
+       */
+      const trigger = findAll(
+        (await runtime.render(status.component, hintProps)),
+        (el) => String(el.props.className ?? '').includes('dsh-rum-trigger'),
+      )[0]
+      const raw = trigger?.props['data-live-input']
+      const parsed = raw === undefined ? null : JSON.parse(String(raw))
+
+      assert(
+        'the live reading publishes its input-side figures',
+        parsed !== null && parsed.context === 585_856 && parsed.cacheHit !== null,
+      )
+
+      const buildHint = (() => {
+        const start = source.indexOf('function tokensHintText(')
+        const end = source.indexOf('\n    /**', start)
+        if (start < 0 || end < 0) return null
+        const bodyText = source
+          .slice(start, end)
+          .replace('function tokensHintText(row, t)', 'return function (row, t)')
+        try {
+          return new Function('tokensExact', bodyText)((value) => `${Math.round(value)} tok grouped`)
+        } catch {
+          return null
+        }
+      })()
+      const stubT = (key, params) => {
+        if (params === undefined) return key
+        return `${key} input=${params.input} hit=${params.hit}`
+      }
+      const withData = buildHint === null ? '' : buildHint({ context: 585_856, cacheHit: 0.9991 }, stubT)
+      const withoutData = buildHint === null ? '' : buildHint({ context: null, cacheHit: null }, stubT)
+
+      assert(
+        'with the figures present the hint reports them instead of two dashes',
+        withData.includes('585856 tok grouped') && withData.includes('99.9%'),
+      )
+      assert(
+        'with no figures the hint still falls back to the placeholder',
+        /*
+         * The stub returns the key for a parameterless call, so the placeholder arrives as the
+         * `none` key rather than the em dash the real dictionary supplies.
+         */
+        withoutData.includes('input=none') && withoutData.includes('hit=none'),
+      )
+    }
+
+
     /*
      * The live row while its tools run.
      *
@@ -3494,7 +3587,6 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       const configLines = build === null ? [] : build(row(2), stubT)
       const switchLines = build === null ? [] : build(row(3), stubT)
 
-      console.log('    [dbg] row2 =', JSON.stringify({configChanged:row(2)?.configChanged, cacheHit:row(2)?.cacheHit, toolCount:row(2)?.toolCount, prev:row(2)?.previousToolCount}), '| lines =', JSON.stringify(configLines))
       assert(
         'a cold row that changed its configuration explains the change and the cold cache',
         /*

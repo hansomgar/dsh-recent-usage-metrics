@@ -2910,8 +2910,16 @@ window.__ModuleLoader__.load({
           model: liveOwner?.model ?? null,
           provider: liveOwner?.provider ?? null,
           switched: liveOwner?.switched === true,
-        toolRun,
           toolRun,
+          /*
+           * The input side, which the tooltip reports. The fold publishes it from
+           * `assistant/message`, and that event lands BEFORE the step's tool calls run — measured
+           * on 3239 steps, every one carried its usage by the time the first tool was dispatched.
+           * So during the tool phase these are already final, not pending.
+           */
+          context: settled === null ? null : numberOrNull(settled.context),
+          cacheRead: settled === null ? null : numberOrNull(settled.cacheRead),
+          cacheHit: settled === null ? null : numberOrNull(settled.cacheHit),
           compaction: activeCompaction,
         }
       }
@@ -2942,6 +2950,9 @@ window.__ModuleLoader__.load({
         provider: liveOwner?.provider ?? null,
         switched: liveOwner?.switched === true,
         toolRun,
+        context: settled === null ? null : numberOrNull(settled.context),
+        cacheRead: settled === null ? null : numberOrNull(settled.cacheRead),
+        cacheHit: settled === null ? null : numberOrNull(settled.cacheHit),
           compaction: activeCompaction,
       }
     }
@@ -3799,6 +3810,15 @@ window.__ModuleLoader__.load({
             /* The four phases above are all a reader needs, but a spec also asserts the shape
              * of the compaction reading, so its identity is published too. */
             'data-compaction': compaction === null ? undefined : compaction.compactionId,
+            /*
+             * The input-side figures the tokens hint reports. Published so a spec can assert that
+             * the live reading actually carries them: during the tool phase they are already final,
+             * and leaving them out was what made the hint show two dashes.
+             */
+            'data-live-input':
+              live === null
+                ? undefined
+                : JSON.stringify({ context: live.context ?? null, cacheHit: live.cacheHit ?? null }),
             onClick: () => {
               setPinned((current) => !current)
             },
