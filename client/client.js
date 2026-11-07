@@ -2164,6 +2164,17 @@ window.__ModuleLoader__.load({
      * A short delay keeps a hint from flashing while the pointer sweeps across the drawer,
      * and a single shared timer is enough because only one hint can be open at a time.
      */
+    /**
+     * Hover state for one row or one header.
+     *
+     * `content` may be a FUNCTION, and the tooltip calls it on every render instead of once. That
+     * is what makes a live figure live: the tool-phase hint counts up while the pointer rests on
+     * the marker, and storing the rendered string would freeze it at whatever it read when the
+     * pointer arrived — which is how it sat at 0.0 s.
+     *
+     * A short delay keeps a hint from flashing while the pointer sweeps across the drawer, and a
+     * single shared timer is enough because only one hint can be open at a time.
+     */
     function useHint(delay) {
       const [hint, setHint] = useState(null)
       const timer = useRef(null)
@@ -2176,11 +2187,19 @@ window.__ModuleLoader__.load({
       const show = useCallback(
         (content, event) => {
           cancel()
+          /*
+           * A supplier that returns nothing means "there is nothing to say right now" — the
+           * caller declines the hint rather than printing a dash, which is the same rule the
+           * total column follows while a request has not reported its tool time.
+           */
+          const resolve = typeof content === 'function' ? content : () => content
+          const first = resolve()
+          if (first === null || first === undefined) return
           const rect = event?.currentTarget?.getBoundingClientRect?.()
           if (rect === undefined) return
           timer.current = setTimeout(() => {
             timer.current = null
-            setHint({ content, x: rect.left, y: rect.top })
+            setHint({ content: resolve, x: rect.left, y: rect.top })
           }, delay)
         },
         [cancel, delay],
@@ -2190,7 +2209,12 @@ window.__ModuleLoader__.load({
         setHint(null)
       }, [cancel])
       useEffect(() => cancel, [cancel])
-      return { hint, show, hide }
+      /*
+       * The tooltip re-reads the supplier each render, so a live figure keeps moving while the
+       * pointer stays put. The component re-renders on its own ticker; nothing extra is needed.
+       */
+      const body = hint === null ? null : typeof hint.content === 'function' ? hint.content() : hint.content
+      return { hint: hint === null ? null : { ...hint, body }, show, hide }
     }
 
     /**
@@ -3876,7 +3900,8 @@ window.__ModuleLoader__.load({
           open: hint.hint !== null,
           x: hint.hint?.x ?? 0,
           y: hint.hint?.y ?? 0,
-          children: hint.hint?.content ?? null,
+          /* `hint.body` is resolved on every render, so a live figure keeps moving. */
+          children: hint.hint?.body ?? null,
         }),
         mounted
           ? portal(
@@ -4045,11 +4070,8 @@ window.__ModuleLoader__.load({
                                * long it has been going. The total column carries the same sentence,
                                * so a reader who hovers either one learns the same thing.
                                */
-                              onMouseEnter: (event) => {
-                                const text = toolRunHint(live, now, t)
-                                if (text === null) return
-                                hint.show(text, event)
-                              },
+                              /* A supplier, not a string: the span must keep counting while open. */
+                              onMouseEnter: (event) => hint.show(() => toolRunHint(live, now, t), event),
                               onMouseLeave: hint.hide,
                             },
                             /*
@@ -4110,7 +4132,19 @@ window.__ModuleLoader__.load({
                               className: 'dsh-rum-col',
                               role: 'cell',
                               /* The input side, exactly as the numbered rows report it. */
-                              onMouseEnter: (event) => hint.show(tokensHintText(live, t), event),
+                              /*
+ * While the model is still writing there is no usage, so the hint would report two
+ * dashes. Declining it is the same rule the total column follows: say nothing rather
+ * than say nothing useful.
+ */
+                              onMouseEnter: (event) =>
+                                hint.show(
+                                  () =>
+                                    live.context === null || live.context === undefined
+                                      ? null
+                                      : tokensHintText(live, t),
+                                  event,
+                                ),
                               onMouseLeave: hint.hide,
                             },
                             tokensText(live.tokens, live.estimated === true, t),
@@ -4126,11 +4160,8 @@ window.__ModuleLoader__.load({
                             {
                               className: 'dsh-rum-col',
                               role: 'cell',
-                              onMouseEnter: (event) => {
-                                const text = toolRunHint(live, now, t)
-                                if (text === null) return
-                                hint.show(text, event)
-                              },
+                              /* A supplier, not a string: the span must keep counting while open. */
+                              onMouseEnter: (event) => hint.show(() => toolRunHint(live, now, t), event),
                               onMouseLeave: hint.hide,
                             },
                             secondsText(

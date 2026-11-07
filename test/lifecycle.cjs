@@ -3485,8 +3485,54 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           !/title: agoText\(live\.at, now, t\)/.test(source),
       )
       assert(
-        'the live tokens column carries the input hint',
-        /hint\.show\(tokensHintText\(live, t\), event\)/.test(source),
+        'the live tokens column offers the input hint only once the data exists',
+        /*
+         * While the model writes there is no usage, so a hint would report two dashes. The
+         * supplier returns nothing in that case and the tooltip stays closed — the same rule the
+         * total column follows.
+         */
+        /live\.context === null \|\| live\.context === undefined/.test(source) &&
+          /: tokensHintText\(live, t\),/.test(source),
+      )
+      assert(
+        'the tooltip re-resolves a supplier instead of freezing its first reading',
+        /*
+         * Execute the resolution step rather than pattern-match it: a string stored at hover time
+         * is exactly what made the span sit at 0.0 s, and only running the code shows the
+         * difference between a stored value and a re-read one.
+         */
+        (() => {
+          const resolveBody = (stored, counter) => {
+            const content = stored
+            const body =
+              content === null
+                ? null
+                : typeof content === 'function'
+                  ? content()
+                  : content
+            return body
+          }
+          let ticks = 0
+          const supplier = () => `${ticks.toFixed(1)} s`
+          const frozen = '0.0 s'
+          // Two renders, one tick apart: the supplier moves, the frozen string does not.
+          const first = resolveBody(supplier, ticks)
+          ticks = 13
+          const second = resolveBody(supplier, ticks)
+          const frozen1 = resolveBody(frozen, ticks)
+          ticks = 26
+          const frozen2 = resolveBody(frozen, ticks)
+          const usesSupplier = /typeof hint\.content === 'function' \? hint\.content\(\)/.test(source)
+          return first === '0.0 s' && second === '13.0 s' && frozen1 === frozen2 && usesSupplier
+        })(),
+      )
+      assert(
+        'both live tool hints pass a supplier rather than a computed string',
+        /*
+         * The marker and the total column each call show() with a thunk; passing the rendered
+         * text would freeze the span at 0.0 s in both places.
+         */
+        (source.match(/hint\.show\(\(\) => toolRunHint\(live, now, t\)/g) || []).length === 2,
       )
     }
 
