@@ -2189,7 +2189,7 @@ window.__ModuleLoader__.load({
      * A short delay keeps a hint from flashing while the pointer sweeps across the drawer, and a
      * single shared timer is enough because only one hint can be open at a time.
      */
-    function useHint(delay) {
+    function useHint(delay, scope) {
       const [hint, setHint] = useState(null)
       const [, setTick] = useState(0)
       const timer = useRef(null)
@@ -2242,7 +2242,44 @@ window.__ModuleLoader__.load({
        * from the supplier's own clock, so the heartbeat only decides how often it is recomputed.
        */
       const body = hint === null ? null : typeof hint.content === 'function' ? hint.content() : hint.content
-      return { hint: hint === null ? null : { ...hint, body }, show, hide }
+      /*
+       * A live hint can become empty while it is open.
+       *
+       * The tool span is only meaningful while a tool is running; the moment the last one returns,
+       * the supplier says so by returning nothing. Keeping the box on screen at that point means a
+       * tooltip with no content sitting over a row that no longer describes a running tool — the
+       * reading may even have moved on to the next request entirely.
+       *
+       * So an empty body closes the hint. It does not clear the state during render (that would
+       * loop); the returned `hint` is simply reported as absent, and the next render after the
+       * state does settle keeps it that way.
+       */
+      /*
+       * A hint belongs to the row it was opened on.
+       *
+       * When the live row stops describing what it described — the request ended, the next one
+       * began, the tool phase became a reply phase — the pointer may never leave an element,
+       * because that element was replaced underneath it. Without this the box would hang over a
+       * row it no longer matches, still counting a tool that has finished.
+       */
+      const scopeAtOpen = useRef(null)
+      if (hint !== null && scopeAtOpen.current === null) scopeAtOpen.current = scope
+      useEffect(() => {
+        if (hint === null) {
+          scopeAtOpen.current = null
+          return
+        }
+        if (scopeAtOpen.current !== null && scopeAtOpen.current !== scope) {
+          scopeAtOpen.current = scope
+          setHint(null)
+        }
+      }, [scope, hint])
+      const empty = hint !== null && body === null
+      useEffect(() => {
+        if (empty) setHint(null)
+      }, [empty])
+      if (hint === null || body === null) return { hint: null, show, hide }
+      return { hint: { ...hint, body }, show, hide }
     }
 
     /**
@@ -3818,7 +3855,20 @@ window.__ModuleLoader__.load({
        * One hover hint serves the whole drawer: only one can be open at a time, and sharing the
        * timer is what stops a hint from a previous row lingering while the pointer moves on.
        */
-      const hint = useHint(300)
+      /*
+       * The scope is the identity of what the LIVE row currently describes. A change means the
+       * hint that is open no longer belongs to it, so it closes — the pointer cannot be relied on
+       * to leave, since the element it was over may itself have been replaced.
+       */
+      const hintScope =
+        (live === null ? 'idle' : live.phase) +
+        ':' +
+        (live === null
+          ? ''
+          : live.compaction !== null && live.compaction !== undefined
+            ? live.compaction.compactionId
+            : live.key ?? 'live')
+      const hint = useHint(300, hintScope)
       const compactionLabel =
         compaction === null
           ? statusLabel

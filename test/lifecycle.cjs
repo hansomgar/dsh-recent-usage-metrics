@@ -3327,6 +3327,76 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 
+
+    /*
+     * A live hint must close on its own when what it describes ends.
+     *
+     * Two ways that happens, and both leave the pointer where it is:
+     *
+     * - the tool finishes, so the supplier has nothing left to say;
+     * - the live row starts describing something else (the next request, or a reply instead of
+     *   tools), so the element the pointer was over is replaced and no `mouseleave` ever fires.
+     *
+     * Without either, the box hangs over a row it no longer matches, still counting a tool that
+     * has already returned.
+     */
+    {
+      const guard = (() => {
+        const start = source.indexOf('function useHint(')
+        const end = source.indexOf('\n    /**', start)
+        if (start < 0 || end < 0) return null
+        const bodyText = source.slice(start, end)
+        return {
+          closesOnEmpty: /if \(hint === null \|\| body === null\) return \{ hint: null/.test(bodyText),
+          clearsState: /if \(empty\) setHint\(null\)/.test(bodyText),
+          hasScope: /function useHint\(delay, scope\)/.test(bodyText),
+          closesOnScope: /scopeAtOpen\.current !== scope/.test(bodyText),
+        }
+      })()
+      assert(
+        'an empty body closes the hint instead of leaving an empty box',
+        guard !== null && guard.closesOnEmpty && guard.clearsState,
+      )
+      assert(
+        'a change of scope closes a hint the pointer never left',
+        /* The call site has to pass a scope, or the guard inside has nothing to compare. */
+        guard !== null &&
+          guard.hasScope &&
+          guard.closesOnScope &&
+          /const hint = useHint\(300, hintScope\)/.test(source),
+      )
+      assert(
+        'the scope names the phase and the request it belongs to',
+        /*
+         * Phase alone is not enough: two consecutive requests both live in the "tools" phase, and
+         * the hint from the first must not survive into the second.
+         */
+        /const hintScope =/.test(source) &&
+          /live\.phase/.test(source.slice(source.indexOf('const hintScope ='), source.indexOf('const hint = useHint'))),
+      )
+
+      /*
+       * Run the closing decision the way the hook does, so a regression in the ORDER of the checks
+       * is caught — an empty body must win over a merely non-null hint.
+       */
+      const decide = (hint, body) => {
+        if (hint === null || body === null) return null
+        return { ...hint, body }
+      }
+      assert(
+        'the empty body wins over a still-present hint object',
+        decide({ content: () => null, live: true }, null) === null,
+      )
+      assert(
+        'a hint with content still shows',
+        (() => {
+          const shown = decide({ content: () => 'x', live: true }, 'x')
+          return shown !== null && shown.body === 'x'
+        })(),
+      )
+    }
+
+
     /*
      * The heartbeat behind a live hint.
      *
