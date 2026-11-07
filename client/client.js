@@ -127,6 +127,9 @@ window.__ModuleLoader__.load({
       rowLowCache: '缓存命中 {rate}，低于 {threshold}%',
       rowConfigChanged: '该行请求配置变更（工具集 {from}→{to}）',
       rowConfigChangedUnknown: '该行请求配置变更，缓存前缀失效',
+      /* A running tool call, shared by the marker and the total column. */
+      toolRunningHint: '正在调用工具 {name} · 已用 {elapsed} s',
+      toolRunningUnnamed: '工具',
       hintTime: '请求发出的时刻（本地时间）',
       hintTtft: '从发出到收到第一个 token 的耗时',
       hintSpeed: '模型生成速度 = 输出 token ÷ 解码时长',
@@ -195,6 +198,8 @@ window.__ModuleLoader__.load({
       rowLowCache: 'Cache hit {rate}, below {threshold}%',
       rowConfigChanged: 'Request configuration changed on this row (tools {from}→{to})',
       rowConfigChangedUnknown: 'Request configuration changed on this row; the cached prefix was lost',
+      toolRunningHint: 'Calling {name} · {elapsed} s elapsed',
+      toolRunningUnnamed: 'a tool',
       hintTime: 'When the request was issued (local time)',
       hintTtft: 'Time from issuing the request to receiving its first token',
       hintSpeed: 'Generation speed = output tokens ÷ decode time',
@@ -1947,6 +1952,26 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The wording for a step whose tools are still running.
+     *
+     * One sentence serves both places it appears — the T marker's hint and the total column's
+     * hint — because they describe the same fact and two phrasings would invite the reader to
+     * look for a difference that is not there.
+     *
+     * A step whose tools have all returned gets nothing: the step has not ended yet, but nothing
+     * is running, so calling it "calling tools" would be false.
+     */
+    function toolRunHint(live, now, t) {
+      const run = live?.toolRun
+      if (run === undefined || run === null || run.count === 0 || run.since === null) return null
+      const elapsed = Math.max(0, now - run.since)
+      return t('toolRunningHint', {
+        name: run.name === null ? t('toolRunningUnnamed') : run.name,
+        elapsed: (elapsed / 1000).toFixed(1),
+      })
+    }
+
+    /**
      * The row-number hint, or an empty list when the row is not highlighted.
      *
      * A highlighted row is worth explaining, and the number column is the one place that has room
@@ -2810,6 +2835,34 @@ window.__ModuleLoader__.load({
         ? runningStatsStep.metrics
         : null
       /*
+       * Which tool calls are still running, and since when.
+       *
+       * `calls[]` carries `startedAt` for every dispatch and `endedAt: null` while one is open, so
+       * a step whose reply has landed and whose tools are still going can say so with a live
+       * figure. The span is measured from the EARLIEST open call, not from a sum: three parallel
+       * tools occupy one wall-clock interval, and adding their durations would overstate it.
+       *
+       * The newest name is kept for the wording, because that is the action the reader just
+       * watched start; the clock still measures from the earliest, which is the honest span.
+       */
+      const toolRun = (() => {
+        const calls = settled === null ? null : settled.calls
+        if (!Array.isArray(calls)) return { count: 0, since: null, name: null }
+        let since = null
+        let name = null
+        let count = 0
+        for (const call of calls) {
+          if (call === null || typeof call !== 'object') continue
+          if (call.endedAt !== null) continue
+          const at = numberOrNull(call.startedAt)
+          if (at === null) continue
+          count += 1
+          if (since === null || at < since) since = at
+          if (typeof call.name === 'string' && call.name !== '') name = call.name
+        }
+        return { count, since, name }
+      })()
+      /*
        * Has the model finished writing this reply?
        *
        * The published step object has NO `messageTime` field — `stepMetrics` keeps that in the
@@ -2857,6 +2910,8 @@ window.__ModuleLoader__.load({
           model: liveOwner?.model ?? null,
           provider: liveOwner?.provider ?? null,
           switched: liveOwner?.switched === true,
+        toolRun,
+          toolRun,
           compaction: activeCompaction,
         }
       }
@@ -2886,6 +2941,7 @@ window.__ModuleLoader__.load({
         model: liveOwner?.model ?? null,
         provider: liveOwner?.provider ?? null,
         switched: liveOwner?.switched === true,
+        toolRun,
           compaction: activeCompaction,
       }
     }
@@ -3958,20 +4014,23 @@ window.__ModuleLoader__.load({
                           h(
                             'span',
                             {
-                              /*
-                               * Both classes the numbered rows compose: `dsh-rum-col` carries the
-                               * cell box (min-width, overflow, ellipsis, nowrap) and
-                               * `dsh-rum-index` the index colour and left alignment. The live
-                               * cell previously had only `dsh-rum-col`, so it sat at a different
-                               * x and baseline than the numbers below it and the marker did not
-                               * line up with the `#` column.
-                               */
                               className: 'dsh-rum-col dsh-rum-index',
                               role: 'cell',
                               'aria-label':
                                 live.compaction !== null && live.compaction !== undefined
                                   ? t('drawerCompacting')
                                   : t('drawerLive'),
+                              /*
+                               * The T marker explains itself while tools run: which tool, and how
+                               * long it has been going. The total column carries the same sentence,
+                               * so a reader who hovers either one learns the same thing.
+                               */
+                              onMouseEnter: (event) => {
+                                const text = toolRunHint(live, now, t)
+                                if (text === null) return
+                                hint.show(text, event)
+                              },
+                              onMouseLeave: hint.hide,
                             },
                             /*
                              * The same glyphs the status pill uses, so a marker means one thing
@@ -4000,7 +4059,9 @@ window.__ModuleLoader__.load({
                               className: 'dsh-rum-col',
                               role: 'cell',
                               'data-align': 'start',
-                              title: agoText(live.at, now, t),
+                              /* The same absolute stamp the numbered rows show. */
+                              onMouseEnter: (event) => hint.show(absoluteStamp(live.at), event),
+                              onMouseLeave: hint.hide,
                             },
                             clockText(live.at),
                           ),
@@ -4023,18 +4084,35 @@ window.__ModuleLoader__.load({
                               ? t('compactionSpeed')
                               : speedText(live.speed, live.estimated === true, t),
                           ),
-                          h('span', { className: 'dsh-rum-col', role: 'cell' }, tokensText(live.tokens, live.estimated === true, t)),
+                          h(
+                            'span',
+                            {
+                              className: 'dsh-rum-col',
+                              role: 'cell',
+                              /* The input side, exactly as the numbered rows report it. */
+                              onMouseEnter: (event) => hint.show(tokensHintText(live, t), event),
+                              onMouseLeave: hint.hide,
+                            },
+                            tokensText(live.tokens, live.estimated === true, t),
+                          ),
                           /*
-                           * No hint on the live row's total.
-                           *
-                           * A running request has not reported its tool time yet, so the only
-                           * possible readings are "no tools" or a partial count — both would be
-                           * wrong about a request that is still going. The hint appears when the
-                           * row settles and the fold has the real figures.
+                           * While its tools run, the total column explains what is happening
+                           * instead of repeating the frozen model time — the same sentence the T
+                           * marker gives. Once every tool has returned there is nothing running,
+                           * so the hint disappears rather than claiming a call that already ended.
                            */
                           h(
                             'span',
-                            { className: 'dsh-rum-col', role: 'cell' },
+                            {
+                              className: 'dsh-rum-col',
+                              role: 'cell',
+                              onMouseEnter: (event) => {
+                                const text = toolRunHint(live, now, t)
+                                if (text === null) return
+                                hint.show(text, event)
+                              },
+                              onMouseLeave: hint.hide,
+                            },
                             secondsText(
                               live.compaction !== null && live.compaction !== undefined
                                 ? compactionSpan(live.compaction, now)

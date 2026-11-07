@@ -3232,6 +3232,172 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 
+
+    /*
+     * The live row while its tools run.
+     *
+     * A step whose reply has landed but whose tools are still going is the one phase where the
+     * drawer can say something new each tick: which tool is running and for how long. The T
+     * marker and the total column both carry that sentence; nothing else about the row changes.
+     */
+    {
+      const T = 70_000_000
+      statsSnapshot = {
+        turns: [
+          {
+            turn: 70,
+            steps: [
+              {
+                turn: 70, step: 1, startTime: T, endTime: null, ttft: 900, model: 5_000, output: 120,
+                // The reply landed, so `model` is set; the step has not ended, so tools run.
+                decode: 4_000, tps: 30, running: true,
+                calls: [
+                  { callId: 'a', name: 'bash', startedAt: T + 5_500, endedAt: null },
+                  { callId: 'b', name: 'read', startedAt: T + 6_200, endedAt: null },
+                ],
+              },
+            ],
+            events: [],
+          },
+        ],
+      }
+      statsSteps.length = 0
+      sessionRunningStub = true
+      const toolProps = {
+        ...statusInject,
+        useChat: (sel) =>
+          sel({ legacy: { nodes: [], turnTimings: new Map(), partial: null, runningCalls: [] } }),
+        useGeek: (sel) => sel(statusInject.hooks.geek.getSnapshot()),
+        useRows: (sel) => sel(statusInject.hooks.rows.getSnapshot()),
+        useSession: (sel) => sel({ running: true }),
+        statsSource: () => ({ getSnapshot: () => statsSnapshot, subscribe: () => () => {} }),
+        useTrajectory: () => ({ eventNodes: [], requests: [] }),
+        t,
+      }
+      const tree = await runtime.render(status.component, toolProps)
+
+      assert(
+        'a step with an open tool call is in the tools phase',
+        liveOf(tree)?.phase === 'tools',
+      )
+
+      /*
+       * Evaluate the wording the way the component does, over a fixed "now" so the figure is
+       * deterministic: the span is measured from the EARLIEST open call, not summed.
+       */
+      const build = (() => {
+        const start = source.indexOf('function toolRunHint(')
+        const end = source.indexOf('\n    /**', start)
+        if (start < 0 || end < 0) return null
+        const bodyText = source.slice(start, end).replace('function toolRunHint(live, now, t)', 'return function (live, now, t)')
+        try {
+          return new Function('numberOrNull', bodyText)(
+            (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
+          )
+        } catch {
+          return null
+        }
+      })()
+      const stubT = (key, params) => {
+        if (params === undefined) return key
+        return `${key} name=${params.name} elapsed=${params.elapsed}`
+      }
+      const liveRow = {
+        toolRun: { count: 2, since: T + 5_500, name: 'read' },
+      }
+      const text = build === null ? '' : build(liveRow, T + 9_000, stubT)
+
+      assert(
+        'the hint names the tool and the span measured from the earliest open call',
+        text.includes('name=read') && text.includes('elapsed=3.5'),
+      )
+      /*
+       * Execute the CONSTRUCTION, not just the formatter.
+       *
+       * A mutation in how the earliest open call is chosen would not touch the wording at all,
+       * so a test that only runs the formatter cannot see it. The block is lifted out of the
+       * component and run over synthetic call lists instead.
+       */
+      const buildRun = (() => {
+        const start = source.indexOf('const toolRun = (() => {')
+        if (start < 0) return null
+        const end = source.indexOf('})()', start)
+        if (end < 0) return null
+        const bodyText = source
+          .slice(start, end + 4)
+          .replace('const toolRun = (() => {', 'return (() => {')
+        try {
+          return new Function('settled', 'numberOrNull', bodyText)(
+            null,
+            (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
+          )
+        } catch {
+          return null
+        }
+      })()
+      const runOver = (calls) => {
+        const start = source.indexOf('const toolRun = (() => {')
+        const end = source.indexOf('})()', start)
+        const bodyText = source.slice(start, end + 4).replace('const toolRun = (() => {', 'return (() => {')
+        // eslint-disable-next-line no-new-func
+        return new Function('settled', 'numberOrNull', bodyText)(
+          { calls },
+          (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
+        )
+      }
+      const sampled = runOver([
+        { name: 'bash', startedAt: 1_000, endedAt: null },
+        { name: 'read', startedAt: 3_000, endedAt: null },
+        { name: 'edit', startedAt: 500, endedAt: 2_000 },
+      ])
+      assert(
+        'the span starts at the earliest OPEN call, ignoring a finished one that began before it',
+        sampled.count === 2 && sampled.since === 1_000,
+      )
+      assert(
+        'the wording names the newest open call',
+        sampled.name === 'read',
+      )
+      assert(
+        'no open calls leaves nothing to report',
+        (() => {
+          const none = runOver([{ name: 'bash', startedAt: 1_000, endedAt: 2_000 }])
+          return none.count === 0 && none.since === null
+        })(),
+      )
+      assert(
+        'a step whose tools have all returned gets no hint at all',
+        /*
+         * `count === 0` must short-circuit the hint on its own: a step can still be open with
+         * every tool already returned, and calling that "calling tools" would be false.
+         */
+        build === null ||
+          build({ toolRun: { count: 0, since: null, name: null } }, T + 9_000, stubT) === null,
+      )
+      assert(
+        'the hint refuses a zero count even when a start time is present',
+        build === null || build({ toolRun: { count: 0, since: T, name: 'bash' } }, T + 9_000, stubT) === null,
+      )
+      assert(
+        'the T marker and the total column share the one hint function',
+        /* Two call sites, one helper: two phrasings would invite a reader to look for a
+         * difference that does not exist. */
+        (source.match(/toolRunHint\(live, now, t\)/g) || []).length >= 2,
+      )
+      assert(
+        'the live clock reports an absolute stamp rather than a relative one',
+        /* The numbered rows show the full timestamp; the live row used to carry "3 minutes ago"
+         * in its title, which cannot answer which request it was. */
+        /onMouseEnter: \(event\) => hint\.show\(absoluteStamp\(live\.at\), event\)/.test(source) &&
+          !/title: agoText\(live\.at, now, t\)/.test(source),
+      )
+      assert(
+        'the live tokens column carries the input hint',
+        /hint\.show\(tokensHintText\(live, t\), event\)/.test(source),
+      )
+    }
+
+
     /*
      * Telling a model switch apart from a configuration change.
      *
