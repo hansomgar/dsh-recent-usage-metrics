@@ -3326,6 +3326,46 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     }
 
 
+
+    /*
+     * The heartbeat behind a live hint.
+     *
+     * A thunk alone re-reads the span, but only when something causes a render. The component's
+     * own clock runs at 30 s, which is what left the figure stuck, so a live hint asks for its own
+     * 150 ms tick. Static hints must NOT get one — a model name or a cache rate does not change
+     * while the pointer rests on it.
+     */
+    {
+      const heart = (() => {
+        const start = source.indexOf('function useHint(')
+        const end = source.indexOf('\n    /**', start)
+        if (start < 0 || end < 0) return null
+        const bodyText = source.slice(start, end)
+        return {
+          gatesOnLive: /if \(!hintLive\) return undefined/.test(bodyText),
+          setsInterval: /setInterval\(\(\) => setTick\(\(value\) => value \+ 1\), 150\)/.test(bodyText),
+          readsFlag: /options\.live === true/.test(bodyText),
+        }
+      })()
+      assert(
+        'the tooltip heartbeat runs only for a hint that asked to be live',
+        heart !== null && heart.gatesOnLive && heart.setsInterval && heart.readsFlag,
+      )
+      assert(
+        'only the two tool hints ask to be live',
+        (source.match(/\{ live: true \}/g) || []).length === 2,
+      )
+      assert(
+        'a live hint reads its clock from the supplier, not from the component',
+        /*
+         * The component ticks every 30 s. A supplier that closed over that clock would stay frozen
+         * however often the heartbeat fired — which is exactly the reported symptom.
+         */
+        (source.match(/toolRunHint\(live, Date\.now\(\), t\)/g) || []).length === 2,
+      )
+    }
+
+
     /*
      * The live row while its tools run.
      *
@@ -3475,7 +3515,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         'the T marker and the total column share the one hint function',
         /* Two call sites, one helper: two phrasings would invite a reader to look for a
          * difference that does not exist. */
-        (source.match(/toolRunHint\(live, now, t\)/g) || []).length >= 2,
+        (source.match(/toolRunHint\(live, Date\.now\(\), t\)/g) || []).length >= 2,
       )
       assert(
         'the live clock reports an absolute stamp rather than a relative one',
@@ -3532,7 +3572,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
          * The marker and the total column each call show() with a thunk; passing the rendered
          * text would freeze the span at 0.0 s in both places.
          */
-        (source.match(/hint\.show\(\(\) => toolRunHint\(live, now, t\)/g) || []).length === 2,
+        (source.match(/hint\.show\(\(\) => toolRunHint\(live, Date\.now\(\), t\), event, \{ live: true \}\)/g) || []).length === 2,
       )
     }
 

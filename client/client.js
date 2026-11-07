@@ -2175,8 +2175,23 @@ window.__ModuleLoader__.load({
      * A short delay keeps a hint from flashing while the pointer sweeps across the drawer, and a
      * single shared timer is enough because only one hint can be open at a time.
      */
+    /**
+     * Hover state for one row or one header.
+     *
+     * `content` may be a FUNCTION, and the tooltip calls it on every render instead of once. That
+     * is what lets a live figure move while the pointer rests on the marker; storing the rendered
+     * string froze it at whatever it read on arrival.
+     *
+     * Re-reading alone is not enough, though — something has to cause a render. `options.live`
+     * asks for that: while such a hint is open, a 150 ms heartbeat forces one. Static hints (a
+     * model name, a cache rate, a timestamp) declare nothing and cost nothing.
+     *
+     * A short delay keeps a hint from flashing while the pointer sweeps across the drawer, and a
+     * single shared timer is enough because only one hint can be open at a time.
+     */
     function useHint(delay) {
       const [hint, setHint] = useState(null)
+      const [, setTick] = useState(0)
       const timer = useRef(null)
       const cancel = useCallback(() => {
         if (timer.current !== null) {
@@ -2185,7 +2200,7 @@ window.__ModuleLoader__.load({
         }
       }, [])
       const show = useCallback(
-        (content, event) => {
+        (content, event, options) => {
           cancel()
           /*
            * A supplier that returns nothing means "there is nothing to say right now" — the
@@ -2197,9 +2212,10 @@ window.__ModuleLoader__.load({
           if (first === null || first === undefined) return
           const rect = event?.currentTarget?.getBoundingClientRect?.()
           if (rect === undefined) return
+          const live = options !== null && options !== undefined && options.live === true
           timer.current = setTimeout(() => {
             timer.current = null
-            setHint({ content: resolve, x: rect.left, y: rect.top })
+            setHint({ content: resolve, live, x: rect.left, y: rect.top })
           }, delay)
         },
         [cancel, delay],
@@ -2210,8 +2226,20 @@ window.__ModuleLoader__.load({
       }, [cancel])
       useEffect(() => cancel, [cancel])
       /*
-       * The tooltip re-reads the supplier each render, so a live figure keeps moving while the
-       * pointer stays put. The component re-renders on its own ticker; nothing extra is needed.
+       * The heartbeat exists only for a LIVE hint. Keying the effect on the whole hint object
+       * would restart it on every tick, since the object is rebuilt on each render; the two
+       * pieces that matter are whether one is open and whether it asked to be live.
+       */
+      const hintLive = hint !== null && hint.live === true
+      const hintOpen = hint !== null
+      useEffect(() => {
+        if (!hintLive) return undefined
+        const id = setInterval(() => setTick((value) => value + 1), 150)
+        return () => clearInterval(id)
+      }, [hintLive, hintOpen])
+      /*
+       * Re-reading the supplier is what turns a tick into a new figure. The value it reads comes
+       * from the supplier's own clock, so the heartbeat only decides how often it is recomputed.
        */
       const body = hint === null ? null : typeof hint.content === 'function' ? hint.content() : hint.content
       return { hint: hint === null ? null : { ...hint, body }, show, hide }
@@ -4071,7 +4099,14 @@ window.__ModuleLoader__.load({
                                * so a reader who hovers either one learns the same thing.
                                */
                               /* A supplier, not a string: the span must keep counting while open. */
-                              onMouseEnter: (event) => hint.show(() => toolRunHint(live, now, t), event),
+                              /*
+ * A thunk plus `live: true`. The thunk re-reads the span, and the flag asks for the
+ * heartbeat that causes the re-read — a thunk alone would still be frozen by the
+ * component's leisurely 30 s clock. The clock itself comes from the supplier, so the
+ * figure is as fresh as the heartbeat, not as fresh as the component.
+ */
+                              onMouseEnter: (event) =>
+                                hint.show(() => toolRunHint(live, Date.now(), t), event, { live: true }),
                               onMouseLeave: hint.hide,
                             },
                             /*
@@ -4161,7 +4196,14 @@ window.__ModuleLoader__.load({
                               className: 'dsh-rum-col',
                               role: 'cell',
                               /* A supplier, not a string: the span must keep counting while open. */
-                              onMouseEnter: (event) => hint.show(() => toolRunHint(live, now, t), event),
+                              /*
+ * A thunk plus `live: true`. The thunk re-reads the span, and the flag asks for the
+ * heartbeat that causes the re-read — a thunk alone would still be frozen by the
+ * component's leisurely 30 s clock. The clock itself comes from the supplier, so the
+ * figure is as fresh as the heartbeat, not as fresh as the component.
+ */
+                              onMouseEnter: (event) =>
+                                hint.show(() => toolRunHint(live, Date.now(), t), event, { live: true }),
                               onMouseLeave: hint.hide,
                             },
                             secondsText(
