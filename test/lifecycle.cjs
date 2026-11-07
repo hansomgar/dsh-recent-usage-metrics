@@ -3057,7 +3057,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       )
       assert(
         'the settled rows keep the tool hint',
-        /hint\.show\(toolHintText\(entry\.row, t\)/.test(source),
+        /if \(column === 'total'\) return toolHintText\(row, t\)/.test(source),
       )
       assert(
         'the legend draws the two colours instead of naming them',
@@ -3328,112 +3328,75 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 
+
     /*
-     * A live hint must close on its own when what it describes ends.
+     * The hint is a position, not a rendered string.
      *
-     * Two ways that happens, and both leave the pointer where it is:
-     *
-     * - the tool finishes, so the supplier has nothing left to say;
-     * - the live row starts describing something else (the next request, or a reply instead of
-     *   tools), so the element the pointer was over is replaced and no `mouseleave` ever fires.
-     *
-     * Without either, the box hangs over a row it no longer matches, still counting a tool that
-     * has already returned.
+     * That single decision is what makes a live figure move, lets a hint close the moment its row
+     * stops describing what it described, and lets one re-open by itself when the row underneath
+     * starts describing something new. Every earlier patch — a heartbeat, a scope guard, an
+     * empty-body check — was working around the opposite choice.
      */
     {
-      const guard = (() => {
+      const model = (() => {
         const start = source.indexOf('function useHint(')
         const end = source.indexOf('\n    /**', start)
         if (start < 0 || end < 0) return null
         const bodyText = source.slice(start, end)
         return {
-          closesOnEmpty: /if \(hint === null \|\| body === null\) return \{ hint: null/.test(bodyText),
-          clearsState: /if \(empty\) setHint\(null\)/.test(bodyText),
-          hasScope: /function useHint\(delay, scope\)/.test(bodyText),
-          closesOnScope: /scopeAtOpen\.current !== scope/.test(bodyText),
+          storesAnchor: /setHover\(\{ anchor, x: rect\.left, y: rect\.top \}\)/.test(bodyText),
+          resolvesOnRender: /const bodyFor = useCallback/.test(bodyText),
+          earlyExit: /if \(hover === null \|\| hover\.anchor !== anchor\) return null/.test(bodyText),
+          noSnapshot: !/setHint\(/.test(bodyText),
         }
       })()
       assert(
-        'an empty body closes the hint instead of leaving an empty box',
-        guard !== null && guard.closesOnEmpty && guard.clearsState,
+        'the hint stores the hovered anchor rather than the rendered text',
+        model !== null && model.storesAnchor && model.noSnapshot,
       )
       assert(
-        'a change of scope closes a hint the pointer never left',
-        /* The call site has to pass a scope, or the guard inside has nothing to compare. */
-        guard !== null &&
-          guard.hasScope &&
-          guard.closesOnScope &&
-          /const hint = useHint\(300, hintScope\)/.test(source),
-      )
-      assert(
-        'the scope names the phase and the request it belongs to',
+        'a supplier is resolved on render, and only while its own anchor is hovered',
         /*
-         * Phase alone is not enough: two consecutive requests both live in the "tools" phase, and
-         * the hint from the first must not survive into the second.
+         * The early exit is not an optimisation detail: all seventeen cells ask for their body on
+         * every tick, and only one can match.
          */
-        /const hintScope =/.test(source) &&
-          /live\.phase/.test(source.slice(source.indexOf('const hintScope ='), source.indexOf('const hint = useHint'))),
-      )
-
-      /*
-       * Run the closing decision the way the hook does, so a regression in the ORDER of the checks
-       * is caught — an empty body must win over a merely non-null hint.
-       */
-      const decide = (hint, body) => {
-        if (hint === null || body === null) return null
-        return { ...hint, body }
-      }
-      assert(
-        'the empty body wins over a still-present hint object',
-        decide({ content: () => null, live: true }, null) === null,
+        model !== null && model.resolvesOnRender && model.earlyExit,
       )
       assert(
-        'a hint with content still shows',
-        (() => {
-          const shown = decide({ content: () => 'x', live: true }, 'x')
-          return shown !== null && shown.body === 'x'
-        })(),
+        'the content is recomputed from the anchor on every render',
+        /const tipAnchor = hint\.hover === null \? null : hint\.hover\.anchor/.test(source) &&
+          /const tipContent = \(\(\) => \{/.test(source),
+      )
+      assert(
+        'every cell identifies itself with a row-scoped anchor',
+        /*
+         * `row:<key>:<column>` and `live:<column>` keep two rows showing the same column apart —
+         * sharing an anchor would let a hint survive from one row into the next.
+         */
+        /hint\.enter\(`row:\$\{entry\.key\}:/ .test(source) &&
+          /hint\.enter\('live:/.test(source) &&
+          /hint\.enter\('header:/.test(source) &&
+          /* Every numbered-row anchor carries the row key: one per column, five in total. */
+          (source.match(/hint\.enter\(`row:\$\{entry\.key\}:/g) || []).length === 5 &&
+          /* The live row uses its own namespace, never a row key. */
+          (source.match(/hint\.enter\('live:/g) || []).length === 5,
+      )
+      assert(
+        'the live tool hints take their clock from the clock, not from the component',
+        /*
+         * The component ticks every 30 s. A span read against that clock would be stale however
+         * often the tooltip recomputed.
+         */
+        (source.match(/toolRunHint\(live, Date\.now\(\), t\)/g) || []).length === 1,
+      )
+      assert(
+        'the old event-snapshot API is gone',
+        (source.match(/hint\.show\(/g) || []).length === 0 &&
+          (source.match(/hint\.hide\b/g) || []).length === 0,
       )
     }
 
 
-    /*
-     * The heartbeat behind a live hint.
-     *
-     * A thunk alone re-reads the span, but only when something causes a render. The component's
-     * own clock runs at 30 s, which is what left the figure stuck, so a live hint asks for its own
-     * 150 ms tick. Static hints must NOT get one — a model name or a cache rate does not change
-     * while the pointer rests on it.
-     */
-    {
-      const heart = (() => {
-        const start = source.indexOf('function useHint(')
-        const end = source.indexOf('\n    /**', start)
-        if (start < 0 || end < 0) return null
-        const bodyText = source.slice(start, end)
-        return {
-          gatesOnLive: /if \(!hintLive\) return undefined/.test(bodyText),
-          setsInterval: /setInterval\(\(\) => setTick\(\(value\) => value \+ 1\), 150\)/.test(bodyText),
-          readsFlag: /options\.live === true/.test(bodyText),
-        }
-      })()
-      assert(
-        'the tooltip heartbeat runs only for a hint that asked to be live',
-        heart !== null && heart.gatesOnLive && heart.setsInterval && heart.readsFlag,
-      )
-      assert(
-        'only the two tool hints ask to be live',
-        (source.match(/\{ live: true \}/g) || []).length === 2,
-      )
-      assert(
-        'a live hint reads its clock from the supplier, not from the component',
-        /*
-         * The component ticks every 30 s. A supplier that closed over that clock would stay frozen
-         * however often the heartbeat fired — which is exactly the reported symptom.
-         */
-        (source.match(/toolRunHint\(live, Date\.now\(\), t\)/g) || []).length === 2,
-      )
-    }
 
 
     /*
@@ -3582,67 +3545,63 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         build === null || build({ toolRun: { count: 0, since: T, name: 'bash' } }, T + 9_000, stubT) === null,
       )
       assert(
-        'the T marker and the total column share the one hint function',
-        /* Two call sites, one helper: two phrasings would invite a reader to look for a
-         * difference that does not exist. */
-        (source.match(/toolRunHint\(live, Date\.now\(\), t\)/g) || []).length >= 2,
+        'the marker and the total column share one sentence',
+        /* Two phrasings would invite a reader to look for a difference that does not exist. */
+        /column === 'index' \|\| column === 'total'/.test(source) &&
+          /return toolRunHint\(live, Date\.now\(\), t\)/.test(source),
       )
       assert(
         'the live clock reports an absolute stamp rather than a relative one',
-        /* The numbered rows show the full timestamp; the live row used to carry "3 minutes ago"
-         * in its title, which cannot answer which request it was. */
-        /onMouseEnter: \(event\) => hint\.show\(absoluteStamp\(live\.at\), event\)/.test(source) &&
+        /*
+         * The numbered rows show the full timestamp; the live row used to carry "3 minutes ago"
+         * in its title, which cannot answer which request it was.
+         */
+        /if \(column === 'clock'\) return absoluteStamp\(live\.at\)/.test(source) &&
           !/title: agoText\(live\.at, now, t\)/.test(source),
       )
       assert(
-        'the live tokens column offers the input hint only once the data exists',
+        'the live tokens hint declines until the usage exists',
         /*
-         * While the model writes there is no usage, so a hint would report two dashes. The
-         * supplier returns nothing in that case and the tooltip stays closed — the same rule the
-         * total column follows.
+         * While the model writes there is no usage, and two dashes say less than silence.
          */
-        /live\.context === null \|\| live\.context === undefined/.test(source) &&
-          /: tokensHintText\(live, t\),/.test(source),
+        /column === 'tokens'/.test(source) &&
+          /live\.context === null \|\| live\.context === undefined \? null : tokensHintText\(live, t\)/.test(
+            source,
+          ),
       )
       assert(
-        'the tooltip re-resolves a supplier instead of freezing its first reading',
+        'the tooltip re-resolves its content instead of freezing the first reading',
         /*
-         * Execute the resolution step rather than pattern-match it: a string stored at hover time
-         * is exactly what made the span sit at 0.0 s, and only running the code shows the
-         * difference between a stored value and a re-read one.
+         * Execute the resolver rather than pattern-match it: a stored value is exactly what
+         * made the span sit still, and only running the code shows the difference.
          */
         (() => {
-          const resolveBody = (stored, counter) => {
-            const content = stored
-            const body =
-              content === null
-                ? null
-                : typeof content === 'function'
-                  ? content()
-                  : content
-            return body
+          const resolve = (hover, suppliers) => {
+            if (hover === null) return null
+            const supplier = suppliers[hover.anchor]
+            return supplier === undefined ? null : supplier()
           }
           let ticks = 0
-          const supplier = () => `${ticks.toFixed(1)} s`
-          const frozen = '0.0 s'
-          // Two renders, one tick apart: the supplier moves, the frozen string does not.
-          const first = resolveBody(supplier, ticks)
+          const suppliers = { total: () => `${ticks.toFixed(1)} s` }
+          const hover = { anchor: 'total' }
+          const first = resolve(hover, suppliers)
           ticks = 13
-          const second = resolveBody(supplier, ticks)
-          const frozen1 = resolveBody(frozen, ticks)
-          ticks = 26
-          const frozen2 = resolveBody(frozen, ticks)
-          const usesSupplier = /typeof hint\.content === 'function' \? hint\.content\(\)/.test(source)
-          return first === '0.0 s' && second === '13.0 s' && frozen1 === frozen2 && usesSupplier
+          const second = resolve(hover, suppliers)
+          // A different anchor must not resolve to this supplier.
+          const other = resolve({ anchor: 'speed' }, suppliers)
+          return first === '0.0 s' && second === '13.0 s' && other === null
         })(),
       )
       assert(
-        'both live tool hints pass a supplier rather than a computed string',
+        'the live tool hints resolve through the anchor, not through a captured string',
         /*
-         * The marker and the total column each call show() with a thunk; passing the rendered
-         * text would freeze the span at 0.0 s in both places.
+         * The anchor is what the tooltip stores; the content is built from it on each render.
+         * Capturing the text is what froze the span, so the absence of that pattern matters
+         * more than the presence of any other.
          */
-        (source.match(/hint\.show\(\(\) => toolRunHint\(live, Date\.now\(\), t\), event, \{ live: true \}\)/g) || []).length === 2,
+        /hint\.enter\('live:index', event\)/.test(source) &&
+          /hint\.enter\('live:total', event\)/.test(source) &&
+          !/hint\.show\(/.test(source),
       )
     }
 

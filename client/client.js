@@ -2176,22 +2176,24 @@ window.__ModuleLoader__.load({
      * single shared timer is enough because only one hint can be open at a time.
      */
     /**
-     * Hover state for one row or one header.
+     * Hover state for the drawer's hints.
      *
-     * `content` may be a FUNCTION, and the tooltip calls it on every render instead of once. That
-     * is what lets a live figure move while the pointer rests on the marker; storing the rendered
-     * string froze it at whatever it read on arrival.
+     * The model is a POSITION, not a rendered string: the hook remembers which element the pointer
+     * is over, and the content is recomputed on every render from a supplier the caller registers.
+     * Storing the rendered text froze it on arrival — that is what made a live figure sit still —
+     * and every patch since (a heartbeat, a scope guard, an empty-body check) was working around
+     * that one decision.
      *
-     * Re-reading alone is not enough, though — something has to cause a render. `options.live`
-     * asks for that: while such a hint is open, a 150 ms heartbeat forces one. Static hints (a
-     * model name, a cache rate, a timestamp) declare nothing and cost nothing.
+     * Recomputing on render fixes all of it at once: a live span moves because the component
+     * re-renders on its own ticker, a hint closes when its supplier has nothing to say, and a hint
+     * re-opens by itself when the row it is over starts describing something new — all without the
+     * pointer moving.
      *
-     * A short delay keeps a hint from flashing while the pointer sweeps across the drawer, and a
-     * single shared timer is enough because only one hint can be open at a time.
+     * `anchor` names the cell: one per row per column, so the live row and a numbered row never
+     * share an identity even when they show the same column.
      */
-    function useHint(delay, scope) {
-      const [hint, setHint] = useState(null)
-      const [, setTick] = useState(0)
+    function useHint(delay) {
+      const [hover, setHover] = useState(null)
       const timer = useRef(null)
       const cancel = useCallback(() => {
         if (timer.current !== null) {
@@ -2199,88 +2201,42 @@ window.__ModuleLoader__.load({
           timer.current = null
         }
       }, [])
-      const show = useCallback(
-        (content, event, options) => {
+      const enter = useCallback(
+        (anchor, event) => {
           cancel()
-          /*
-           * A supplier that returns nothing means "there is nothing to say right now" — the
-           * caller declines the hint rather than printing a dash, which is the same rule the
-           * total column follows while a request has not reported its tool time.
-           */
-          const resolve = typeof content === 'function' ? content : () => content
-          const first = resolve()
-          if (first === null || first === undefined) return
-          const rect = event?.currentTarget?.getBoundingClientRect?.()
-          if (rect === undefined) return
-          const live = options !== null && options !== undefined && options.live === true
           timer.current = setTimeout(() => {
             timer.current = null
-            setHint({ content: resolve, live, x: rect.left, y: rect.top })
+            const rect = event?.currentTarget?.getBoundingClientRect?.()
+            if (rect === undefined) return
+            setHover({ anchor, x: rect.left, y: rect.top })
           }, delay)
         },
         [cancel, delay],
       )
-      const hide = useCallback(() => {
+      const leave = useCallback(() => {
         cancel()
-        setHint(null)
+        setHover(null)
       }, [cancel])
       useEffect(() => cancel, [cancel])
       /*
-       * The heartbeat exists only for a LIVE hint. Keying the effect on the whole hint object
-       * would restart it on every tick, since the object is rebuilt on each render; the two
-       * pieces that matter are whether one is open and whether it asked to be live.
-       */
-      const hintLive = hint !== null && hint.live === true
-      const hintOpen = hint !== null
-      useEffect(() => {
-        if (!hintLive) return undefined
-        const id = setInterval(() => setTick((value) => value + 1), 150)
-        return () => clearInterval(id)
-      }, [hintLive, hintOpen])
-      /*
-       * Re-reading the supplier is what turns a tick into a new figure. The value it reads comes
-       * from the supplier's own clock, so the heartbeat only decides how often it is recomputed.
-       */
-      const body = hint === null ? null : typeof hint.content === 'function' ? hint.content() : hint.content
-      /*
-       * A live hint can become empty while it is open.
+       * Resolve a supplier only while its own anchor is the one being hovered.
        *
-       * The tool span is only meaningful while a tool is running; the moment the last one returns,
-       * the supplier says so by returning nothing. Keeping the box on screen at that point means a
-       * tooltip with no content sitting over a row that no longer describes a running tool — the
-       * reading may even have moved on to the next request entirely.
-       *
-       * So an empty body closes the hint. It does not clear the state during render (that would
-       * loop); the returned `hint` is simply reported as absent, and the next render after the
-       * state does settle keeps it that way.
+       * The early return matters: every cell on screen calls this on every render, and only one of
+       * them can match. Leaving it out would evaluate all of them, once per tick, for nothing.
        */
-      /*
-       * A hint belongs to the row it was opened on.
-       *
-       * When the live row stops describing what it described — the request ended, the next one
-       * began, the tool phase became a reply phase — the pointer may never leave an element,
-       * because that element was replaced underneath it. Without this the box would hang over a
-       * row it no longer matches, still counting a tool that has finished.
-       */
-      const scopeAtOpen = useRef(null)
-      if (hint !== null && scopeAtOpen.current === null) scopeAtOpen.current = scope
-      useEffect(() => {
-        if (hint === null) {
-          scopeAtOpen.current = null
-          return
-        }
-        if (scopeAtOpen.current !== null && scopeAtOpen.current !== scope) {
-          scopeAtOpen.current = scope
-          setHint(null)
-        }
-      }, [scope, hint])
-      const empty = hint !== null && body === null
-      useEffect(() => {
-        if (empty) setHint(null)
-      }, [empty])
-      if (hint === null || body === null) return { hint: null, show, hide }
-      return { hint: { ...hint, body }, show, hide }
+      const bodyFor = useCallback(
+        (anchor, supplier) => {
+          if (hover === null || hover.anchor !== anchor) return null
+          const body = typeof supplier === 'function' ? supplier() : supplier
+          return body === undefined ? null : body
+        },
+        [hover],
+      )
+      /** Where to draw the box, or null when nothing is hovered. */
+      const origin = hover === null ? null : { x: hover.x, y: hover.y }
+      return { hover, origin, enter, leave, bodyFor }
     }
+
 
     /**
      * The compaction wording as one sentence, for the button's accessible name.
@@ -3856,23 +3812,88 @@ window.__ModuleLoader__.load({
        * timer is what stops a hint from a previous row lingering while the pointer moves on.
        */
       /*
-       * The scope is the identity of what the LIVE row currently describes. A change means the
-       * hint that is open no longer belongs to it, so it closes — the pointer cannot be relied on
-       * to leave, since the element it was over may itself have been replaced.
+       * One hover hint serves the whole drawer. The anchor names the cell, and the content is
+       * resolved from it on every render — see `tipContent` below.
        */
-      const hintScope =
-        (live === null ? 'idle' : live.phase) +
-        ':' +
-        (live === null
-          ? ''
-          : live.compaction !== null && live.compaction !== undefined
-            ? live.compaction.compactionId
-            : live.key ?? 'live')
-      const hint = useHint(300, hintScope)
+      const hint = useHint(300)
       const compactionLabel =
         compaction === null
           ? statusLabel
           : `${t('statusAria')} · ${compactionSentence(compaction, live.phase, now, t)}`
+
+      /*
+       * Resolve the hint's content from the anchor it is hovering.
+       *
+       * This runs on every render and MUST stay cheap: it is reached for all seventeen cells on
+       * each tick. The first comparison exits immediately for every cell that is not hovered, so
+       * the cost without a hint is one string comparison per cell.
+       *
+       * Nothing here is cached. That is deliberate — a cached value is what froze the tool span,
+       * and recomputing is how the hint notices that its row now describes something else, or that
+       * it has nothing left to say.
+       */
+      const tipAnchor = hint.hover === null ? null : hint.hover.anchor
+      const tipContent = (() => {
+        if (tipAnchor === null) return null
+
+        if (tipAnchor.startsWith('header:')) {
+          const column = tipAnchor.slice('header:'.length)
+          if (column === 'index') return indexHint(t)
+          const key = {
+            time: 'hintTime',
+            ttft: 'hintTtft',
+            speed: 'hintSpeed',
+            tokens: 'hintTokens',
+            total: 'hintTotal',
+            amortized: 'hintAmortized',
+          }[column]
+          return key === undefined ? null : t(key)
+        }
+
+        /* The live row: its figures change under the pointer, which is the whole point. */
+        if (tipAnchor.startsWith('live:')) {
+          if (live === null) return null
+          const column = tipAnchor.slice('live:'.length)
+          if (column === 'index' || column === 'total') {
+            /* The running-tool sentence; nothing to say once every tool has returned. */
+            return toolRunHint(live, Date.now(), t)
+          }
+          if (column === 'clock') return absoluteStamp(live.at)
+          if (column === 'speed') return modelHintText(live, t)
+          if (column === 'tokens') {
+            /* No usage has arrived yet, so declining says more than two dashes would. */
+            return live.context === null || live.context === undefined ? null : tokensHintText(live, t)
+          }
+          return null
+        }
+
+        if (tipAnchor.startsWith('row:')) {
+          const rest = tipAnchor.slice('row:'.length)
+          const split = rest.lastIndexOf(':')
+          if (split < 0) return null
+          const key = rest.slice(0, split)
+          const column = rest.slice(split + 1)
+          const row = view.map((entry) => entry.row).find((candidate) => candidate.key === key)
+          if (row === undefined) return null
+          if (column === 'index') {
+            const lines = rowHintLines(row, t)
+            if (lines.length === 0) return null
+            if (lines.length === 1) return lines[0]
+            return h(
+              'span',
+              { className: 'dsh-rum-tip-body' },
+              ...lines.map((line, index) => h('span', { className: 'dsh-rum-tip-line' }, line)),
+            )
+          }
+          if (column === 'clock') return absoluteStamp(row.at)
+          if (column === 'speed') return modelHintText(row, t)
+          if (column === 'tokens') return tokensHintText(row, t)
+          if (column === 'total') return toolHintText(row, t)
+          return null
+        }
+
+        return null
+      })()
 
       return h(
         'div',
@@ -3975,11 +3996,10 @@ window.__ModuleLoader__.load({
           ),
         ),
         h(Tooltip, {
-          open: hint.hint !== null,
-          x: hint.hint?.x ?? 0,
-          y: hint.hint?.y ?? 0,
-          /* `hint.body` is resolved on every render, so a live figure keeps moving. */
-          children: hint.hint?.body ?? null,
+          open: tipContent !== null,
+          x: hint.origin?.x ?? 0,
+          y: hint.origin?.y ?? 0,
+          children: tipContent,
         }),
         mounted
           ? portal(
@@ -4044,8 +4064,8 @@ window.__ModuleLoader__.load({
                           className: 'dsh-rum-col',
                           role: 'columnheader',
                           'data-align': 'start',
-                          onMouseEnter: (event) => hint.show(indexHint(t), event),
-                          onMouseLeave: hint.hide,
+                          onMouseEnter: (event) => hint.enter('header:index', event),
+                          onMouseLeave: hint.leave,
                         },
                         t('colIndex'),
                       ),
@@ -4055,8 +4075,8 @@ window.__ModuleLoader__.load({
                           className: 'dsh-rum-col',
                           role: 'columnheader',
                           'data-align': 'start',
-                          onMouseEnter: (event) => hint.show(t('hintTime'), event),
-                          onMouseLeave: hint.hide,
+                          onMouseEnter: (event) => hint.enter('header:time', event),
+                          onMouseLeave: hint.leave,
                         },
                         t('colTime'),
                       ),
@@ -4065,8 +4085,8 @@ window.__ModuleLoader__.load({
                         {
                           className: 'dsh-rum-col',
                           role: 'columnheader',
-                          onMouseEnter: (event) => hint.show(t('hintTtft'), event),
-                          onMouseLeave: hint.hide,
+                          onMouseEnter: (event) => hint.enter('header:ttft', event),
+                          onMouseLeave: hint.leave,
                         },
                         t('colTtft'),
                       ),
@@ -4075,8 +4095,8 @@ window.__ModuleLoader__.load({
                         {
                           className: 'dsh-rum-col',
                           role: 'columnheader',
-                          onMouseEnter: (event) => hint.show(t('hintSpeed'), event),
-                          onMouseLeave: hint.hide,
+                          onMouseEnter: (event) => hint.enter('header:speed', event),
+                          onMouseLeave: hint.leave,
                         },
                         t('colSpeed'),
                       ),
@@ -4085,8 +4105,8 @@ window.__ModuleLoader__.load({
                         {
                           className: 'dsh-rum-col',
                           role: 'columnheader',
-                          onMouseEnter: (event) => hint.show(t('hintTokens'), event),
-                          onMouseLeave: hint.hide,
+                          onMouseEnter: (event) => hint.enter('header:tokens', event),
+                          onMouseLeave: hint.leave,
                         },
                         t('colTokens'),
                       ),
@@ -4095,8 +4115,8 @@ window.__ModuleLoader__.load({
                         {
                           className: 'dsh-rum-col',
                           role: 'columnheader',
-                          onMouseEnter: (event) => hint.show(t('hintTotal'), event),
-                          onMouseLeave: hint.hide,
+                          onMouseEnter: (event) => hint.enter('header:total', event),
+                          onMouseLeave: hint.leave,
                         },
                         t('colTotal'),
                       ),
@@ -4105,8 +4125,8 @@ window.__ModuleLoader__.load({
                         {
                           className: 'dsh-rum-col',
                           role: 'columnheader',
-                          onMouseEnter: (event) => hint.show(t('hintAmortized'), event),
-                          onMouseLeave: hint.hide,
+                          onMouseEnter: (event) => hint.enter('header:amortized', event),
+                          onMouseLeave: hint.leave,
                         },
                         t('colAmortized'),
                       ),
@@ -4156,8 +4176,8 @@ window.__ModuleLoader__.load({
  * figure is as fresh as the heartbeat, not as fresh as the component.
  */
                               onMouseEnter: (event) =>
-                                hint.show(() => toolRunHint(live, Date.now(), t), event, { live: true }),
-                              onMouseLeave: hint.hide,
+                                hint.enter('live:index', event),
+                              onMouseLeave: hint.leave,
                             },
                             /*
                              * The same glyphs the status pill uses, so a marker means one thing
@@ -4187,8 +4207,8 @@ window.__ModuleLoader__.load({
                               role: 'cell',
                               'data-align': 'start',
                               /* The same absolute stamp the numbered rows show. */
-                              onMouseEnter: (event) => hint.show(absoluteStamp(live.at), event),
-                              onMouseLeave: hint.hide,
+                              onMouseEnter: (event) => hint.enter('live:clock', event),
+                              onMouseLeave: hint.leave,
                             },
                             clockText(live.at),
                           ),
@@ -4204,8 +4224,8 @@ window.__ModuleLoader__.load({
                                * the plan worked out, and falls back to the generic wording while
                                * nothing is known yet — a turn's first step with no header.
                                */
-                              onMouseEnter: (event) => hint.show(modelHintText(live, t), event),
-                              onMouseLeave: hint.hide,
+                              onMouseEnter: (event) => hint.enter('live:speed', event),
+                              onMouseLeave: hint.leave,
                             },
                             live.compaction !== null && live.compaction !== undefined
                               ? t('compactionSpeed')
@@ -4223,14 +4243,8 @@ window.__ModuleLoader__.load({
  * than say nothing useful.
  */
                               onMouseEnter: (event) =>
-                                hint.show(
-                                  () =>
-                                    live.context === null || live.context === undefined
-                                      ? null
-                                      : tokensHintText(live, t),
-                                  event,
-                                ),
-                              onMouseLeave: hint.hide,
+                                hint.enter('live:tokens', event),
+                              onMouseLeave: hint.leave,
                             },
                             tokensText(live.tokens, live.estimated === true, t),
                           ),
@@ -4253,8 +4267,8 @@ window.__ModuleLoader__.load({
  * figure is as fresh as the heartbeat, not as fresh as the component.
  */
                               onMouseEnter: (event) =>
-                                hint.show(() => toolRunHint(live, Date.now(), t), event, { live: true }),
-                              onMouseLeave: hint.hide,
+                                hint.enter('live:total', event),
+                              onMouseLeave: hint.leave,
                             },
                             secondsText(
                               live.compaction !== null && live.compaction !== undefined
@@ -4308,20 +4322,9 @@ window.__ModuleLoader__.load({
                             onMouseEnter: (event) => {
                               const lines = rowHintLines(entry.row, t)
                               if (lines.length === 0) return
-                              hint.show(
-                                lines.length === 1
-                                  ? lines[0]
-                                  : h(
-                                      'span',
-                                      { className: 'dsh-rum-tip-body' },
-                                      ...lines.map((line, index) =>
-                                        h('span', { className: 'dsh-rum-tip-line' }, line),
-                                      ),
-                                    ),
-                                event,
-                              )
+                              hint.enter(`row:${entry.key}:index`, event)
                             },
-                            onMouseLeave: hint.hide,
+                            onMouseLeave: hint.leave,
                           },
                           entry.row.compaction === true
                             ? h(CompactionIcon, {
@@ -4345,8 +4348,8 @@ window.__ModuleLoader__.load({
                           {
                             className: 'dsh-rum-clock',
                             role: 'cell',
-                            onMouseEnter: (event) => hint.show(absoluteStamp(entry.row.at), event),
-                            onMouseLeave: hint.hide,
+                            onMouseEnter: (event) => hint.enter(`row:${entry.key}:clock`, event),
+                            onMouseLeave: hint.leave,
                           },
                           clockText(entry.row.at),
                         ),
@@ -4370,8 +4373,8 @@ window.__ModuleLoader__.load({
                              * summarizer reuses the routed model, and `compaction/summary`
                              * records it, so both kinds of row can answer.
                              */
-                            onMouseEnter: (event) => hint.show(modelHintText(entry.row, t), event),
-                            onMouseLeave: hint.hide,
+                            onMouseEnter: (event) => hint.enter(`row:${entry.key}:speed`, event),
+                            onMouseLeave: hint.leave,
                           },
                           /*
                            * A cancelled step never settled and a compaction never generates, so
@@ -4389,8 +4392,8 @@ window.__ModuleLoader__.load({
                           {
                             className: 'dsh-rum-col',
                             role: 'cell',
-                            onMouseEnter: (event) => hint.show(tokensHintText(entry.row, t), event),
-                            onMouseLeave: hint.hide,
+                            onMouseEnter: (event) => hint.enter(`row:${entry.key}:tokens`, event),
+                            onMouseLeave: hint.leave,
                           },
                           tokensText(entry.row.tokens, entry.row.estimated, t),
                         ),
@@ -4404,8 +4407,8 @@ window.__ModuleLoader__.load({
                              * in the cell deliberately excludes it, which is exactly why the two
                              * need to be shown together.
                              */
-                            onMouseEnter: (event) => hint.show(toolHintText(entry.row, t), event),
-                            onMouseLeave: hint.hide,
+                            onMouseEnter: (event) => hint.enter(`row:${entry.key}:total`, event),
+                            onMouseLeave: hint.leave,
                           },
                           secondsText(
                             /*
