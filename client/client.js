@@ -2204,10 +2204,17 @@ window.__ModuleLoader__.load({
       const enter = useCallback(
         (anchor, event) => {
           cancel()
+          /*
+           * Read the geometry NOW, not in the timer.
+           *
+           * React pools its synthetic event objects: `currentTarget` is nulled once the handler
+           * returns, so reading it inside a deferred callback finds nothing and the hint never
+           * opens. That is exactly what happened — every hint silently declined.
+           */
+          const rect = event?.currentTarget?.getBoundingClientRect?.()
+          if (rect === undefined) return
           timer.current = setTimeout(() => {
             timer.current = null
-            const rect = event?.currentTarget?.getBoundingClientRect?.()
-            if (rect === undefined) return
             setHover({ anchor, x: rect.left, y: rect.top })
           }, delay)
         },

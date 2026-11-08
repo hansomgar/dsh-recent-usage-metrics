@@ -3329,6 +3329,56 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
 
+
+    /*
+     * The hint must read the anchor's geometry synchronously.
+     *
+     * React pools synthetic events: once the handler returns, `currentTarget` is null. Reading it
+     * from inside the deferred timer therefore found nothing, the guard returned early, and every
+     * hint in the drawer silently declined to open. Nothing in the DOM changed, so no other check
+     * could see it — the whole tooltip system was dead and still passed.
+     */
+    {
+      const timing = (() => {
+        const start = source.indexOf('const enter = useCallback(')
+        const end = source.indexOf('const leave = useCallback(', start)
+        if (start < 0 || end < 0) return null
+        const bodyText = source.slice(start, end)
+        const timerAt = bodyText.indexOf('setTimeout(')
+        const rectAt = bodyText.indexOf('getBoundingClientRect')
+        return {
+          readsGeometry: rectAt >= 0,
+          // The read must come BEFORE the timer is scheduled.
+          synchronous: rectAt >= 0 && timerAt >= 0 && rectAt < timerAt,
+          bodyText,
+        }
+      })()
+      assert(
+        'the hint reads the anchor geometry before deferring',
+        /*
+         * A pooled event has no `currentTarget` by the time a timer fires, so a read inside the
+         * timer can never succeed — the symptom was no tooltip at all, not a misplaced one.
+         */
+        timing !== null && timing.readsGeometry && timing.synchronous,
+      )
+      assert(
+        'the deferred callback uses the captured rect and not the event',
+        (() => {
+          const model = (() => {
+            const start = source.indexOf('const enter = useCallback(')
+            const end = source.indexOf('const leave = useCallback(', start)
+            if (start < 0 || end < 0) return ''
+            return source.slice(start, end)
+          })()
+          // Nothing after the timer call may touch `event`.
+          const timerAt = model.indexOf('setTimeout(')
+          if (timerAt < 0) return false
+          return !/event\??\./.test(model.slice(timerAt))
+        })(),
+      )
+    }
+
+
     /*
      * The hint is a position, not a rendered string.
      *
