@@ -520,12 +520,18 @@ window.__ModuleLoader__.load({
  *
  * A transparent pseudo-element extends the hit area without touching the grid: the column keeps
  * its 18px, so every other column stays exactly where it is and the drawer's width does not move.
- * The extension goes 10px left, 6px right and 4px above and below. The right side stops at 6px
- * so the time column keeps its own target.
+ *
+ * Horizontal: 22px to the left reaches the drawer's own edge (16px of drawer padding plus the
+ * row's 6px), and 6px to the right stops short of the time column so that column keeps its own
+ * target.
+ *
+ * Vertical: none. The row is 24.8px tall with a 1px margin, so anything above 0.5px per side makes
+ * two neighbours overlap, and the later row wins that band — the pointer would show the wrong
+ * hint. Four pixels each way overlapped by 7px, a quarter of a row. The cell already spans the
+ * full row height, so the vertical extension was buying very little and costing correctness.
  *
  * The event still bubbles from the pseudo-element to the cell that owns the handler, and
- * getBoundingClientRect on that cell is unchanged, so the box is drawn in the same place as
- * before.
+ * getBoundingClientRect on that cell is unchanged, so the box is drawn in the same place.
  */
 .dsh-rum-index {
   position: relative;
@@ -537,7 +543,7 @@ window.__ModuleLoader__.load({
 .dsh-rum-index::after {
   content: '';
   position: absolute;
-  inset: -4px -6px -4px -10px;
+  inset: 0 -6px 0 -22px;
 }
 .dsh-rum-primary {
   color: var(--dsw-alias-label-primary);

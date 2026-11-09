@@ -4262,7 +4262,15 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
        * every other column and the drawer total width where they were.
        */
       /\.dsh-rum-index\s*\{[^}]*position:\s*relative/.test(css) &&
-        /\.dsh-rum-index::after\s*\{[^}]*content:\s*''[^}]*inset:\s*-4px -6px -4px -10px/.test(css),
+        /\.dsh-rum-index::after\s*\{[^}]*content:\s*''[^}]*inset:\s*0 -6px 0 -22px/.test(css),
+    )
+    assert(
+      'the target does not grow vertically, so neighbouring rows cannot overlap',
+      /*
+       * Rows sit 1px apart. Any vertical growth makes two neighbours share a band, and the later
+       * row wins it — the pointer would show the wrong row's hint.
+       */
+      !/inset:\s*-\d/.test(css.slice(css.indexOf('.dsh-rum-index::after'))),
     )
     assert(
       'the enlarged target is positioned from the cell, so the box does not move',
