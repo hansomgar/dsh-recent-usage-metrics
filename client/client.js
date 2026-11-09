@@ -513,6 +513,32 @@ window.__ModuleLoader__.load({
   justify-content: flex-start;
   min-height: 1.4em;
 }
+/*
+ * The row-number cell is 18px wide, which is a small target for a hover — the hint it carries
+ * explains a highlight in a full sentence and is easy to miss if the pointer must land on a
+ * digit.
+ *
+ * A transparent pseudo-element extends the hit area without touching the grid: the column keeps
+ * its 18px, so every other column stays exactly where it is and the drawer's width does not move.
+ * The extension goes 10px left, 6px right and 4px above and below. The right side stops at 6px
+ * so the time column keeps its own target.
+ *
+ * The event still bubbles from the pseudo-element to the cell that owns the handler, and
+ * getBoundingClientRect on that cell is unchanged, so the box is drawn in the same place as
+ * before.
+ */
+.dsh-rum-index {
+  position: relative;
+}
+/* Only a cell that actually has something to say advertises it. */
+.dsh-rum-index[data-hint="true"] {
+  cursor: help;
+}
+.dsh-rum-index::after {
+  content: '';
+  position: absolute;
+  inset: -4px -6px -4px -10px;
+}
 .dsh-rum-primary {
   color: var(--dsw-alias-label-primary);
 }
@@ -4326,6 +4352,9 @@ window.__ModuleLoader__.load({
                              * nothing to show when the list is empty, so hovering a plain row stays
                              * silent.
                              */
+                            /* The attribute is what turns the enlarged target into a visible
+                             * affordance; a plain row's number stays an ordinary cursor. */
+                            'data-hint': rowHintLines(entry.row, t).length > 0 ? 'true' : undefined,
                             onMouseEnter: (event) => {
                               const lines = rowHintLines(entry.row, t)
                               if (lines.length === 0) return

@@ -4246,6 +4246,44 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     )
   }
 
+  /*
+   * The row-number cell carries a hint, and its target has to be large enough to hit.
+   *
+   * The column is 18px wide — small for a pointer that must land on a digit to read a sentence
+   * about a highlight. A transparent pseudo-element extends the target without touching the
+   * grid, so no other column moves and the drawer width is unchanged.
+   */
+  {
+    const css = styleEls[0].textContent
+    assert(
+      'the row-number cell extends its target without changing its column',
+      /*
+       * inset grows the pseudo-element outward; the grid column stays 18px, which is what keeps
+       * every other column and the drawer total width where they were.
+       */
+      /\.dsh-rum-index\s*\{[^}]*position:\s*relative/.test(css) &&
+        /\.dsh-rum-index::after\s*\{[^}]*content:\s*''[^}]*inset:\s*-4px -6px -4px -10px/.test(css),
+    )
+    assert(
+      'the enlarged target is positioned from the cell, so the box does not move',
+      /position:\s*absolute/.test(css.slice(css.indexOf('.dsh-rum-index::after'))),
+    )
+    assert(
+      'only a row that has something to say shows the help cursor',
+      /*
+       * A plain row's number keeps an ordinary cursor: an enlarged target that advertises a
+       * hint which will not appear is worse than no hint at all.
+       */
+      /\.dsh-rum-index\[data-hint="true"\]\s*\{[^}]*cursor:\s*help/.test(css) &&
+        !/\.dsh-rum-index\s*\{[^}]*cursor:\s*help/.test(css),
+    )
+    assert(
+      'the cell marks itself only when its row has hint lines',
+      /'data-hint': rowHintLines\(entry\.row, t\)\.length > 0 \? 'true' : undefined/.test(source),
+    )
+  }
+
+
 
   /* ---------------------------------------------------------------- */
   /* Disposal                                                          */
