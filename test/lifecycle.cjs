@@ -3654,8 +3654,61 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           /t\('liveWritingNoModelHint', \{ elapsed: span \}\)/.test(source),
       )
       assert(
-        'the compactor bars stay silent, since the speed column already names them',
-        /if \(live\.compaction !== null && live\.compaction !== undefined\) return null/.test(source),
+        'the compactor bars name the model and the elapsed span',
+        /*
+         * All three markers read alike now. The speed column says WHAT is happening; the hint
+         * says which model and for how long.
+         */
+        /if \(live\.compaction !== null && live\.compaction !== undefined\) \{/.test(source) &&
+          /t\('liveCompactingHint', \{/.test(source) &&
+          /model: compactionModelName\(live\.compaction, t\)/.test(source) &&
+          /compactionSpan\(live\.compaction, Date\.now\(\)\)/.test(source),
+      )
+      assert(
+        'the compaction hint is built from the compaction reading, executed here',
+        /*
+         * Run it: the model has to come from the compaction record and the span from its own
+         * start, so a finished compaction reports its frozen wall instead of climbing.
+         */
+        (() => {
+          const start = source.indexOf('function liveMarkerHint(')
+          const stop = source.indexOf('\n    /**', start)
+          if (start < 0 || stop < 0) return false
+          const bodyText = source
+            .slice(start, stop)
+            .replace('function liveMarkerHint(live, t)', 'return function (live, t)')
+          let fn
+          try {
+            fn = new Function(
+              'numberOrNull', 'toolRunHint', 'modelHintText', 'Date',
+              'compactionSpan', 'compactionModelName', bodyText,
+            )(
+              (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
+              () => 'TOOL',
+              () => 'stub/model',
+              Date,
+              (c) => (c.running === true ? 3_400 : c.totalMs),
+              (c) => c.model ?? 'chat-model',
+            )
+          } catch {
+            return false
+          }
+          const stub = (key, params) =>
+            params === undefined ? key : `${key} model=${params.model} elapsed=${params.elapsed}`
+          const running = fn(
+            { compaction: { running: true, startMs: 0, totalMs: null, model: 'm1' }, phase: 'compacting', totalMs: null, model: null, switched: false },
+            stub,
+          )
+          const done = fn(
+            { compaction: { running: false, startMs: 0, totalMs: 32_590, model: 'm1' }, phase: 'compacted', totalMs: null, model: null, switched: false },
+            stub,
+          )
+          return (
+            running.includes('liveCompactingHint') &&
+            running.includes('model=m1') &&
+            done.includes('elapsed=32.6')
+          )
+        })(),
       )
       assert(
         'the live clock reports an absolute stamp rather than a relative one',

@@ -135,6 +135,8 @@ window.__ModuleLoader__.load({
       /* A blue live row switched models on this very request. */
       liveSwitchedHint: '已切换至 {model} · 已用 {elapsed} s',
       liveSwitchedNoModelHint: '已切换模型 · 已用 {elapsed} s',
+      /* The compaction bars: which model is summarising, and for how long. */
+      liveCompactingHint: '正在使用 {model} 压缩，已用 {elapsed} s',
       toolRunningUnnamed: '工具',
       hintTime: '请求发出的时刻（本地时间）',
       hintTtft: '从发出到收到第一个 token 的耗时',
@@ -209,6 +211,7 @@ window.__ModuleLoader__.load({
       liveWritingNoModelHint: 'Writing · {elapsed} s elapsed',
       liveSwitchedHint: 'Switched to {model} · {elapsed} s elapsed',
       liveSwitchedNoModelHint: 'Switched models · {elapsed} s elapsed',
+      liveCompactingHint: 'Compacting with {model}, {elapsed} s elapsed',
       toolRunningUnnamed: 'a tool',
       hintTime: 'When the request was issued (local time)',
       hintTtft: 'Time from issuing the request to receiving its first token',
@@ -2029,7 +2032,19 @@ window.__ModuleLoader__.load({
      */
     function liveMarkerHint(live, t) {
       if (live === null) return null
-      if (live.compaction !== null && live.compaction !== undefined) return null
+      /*
+       * The compactor bars name the model doing the summarising and how long it has been at it.
+       * They used to stay silent on the grounds that the speed column already said "compaction" —
+       * but that column says WHAT is happening, not which model is doing it or for how long, and
+       * the three markers should read alike.
+       */
+      if (live.compaction !== null && live.compaction !== undefined) {
+        const span = compactionSpan(live.compaction, Date.now())
+        return t('liveCompactingHint', {
+          model: compactionModelName(live.compaction, t),
+          elapsed: span === null ? '0.0' : (Math.max(0, span) / 1000).toFixed(1),
+        })
+      }
       if (live.phase === 'tools') return toolRunHint(live, Date.now(), t)
       const elapsed = numberOrNull(live.totalMs)
       const span = elapsed === null ? '0.0' : (Math.max(0, elapsed) / 1000).toFixed(1)
