@@ -3442,7 +3442,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
          * The component ticks every 30 s. A span read against that clock would be stale however
          * often the tooltip recomputed.
          */
-        (source.match(/toolRunHint\(live, Date\.now\(\), t\)/g) || []).length === 1,
+        (source.match(/toolRunHint\(live, Date\.now\(\), t\)/g) || []).length === 2,
       )
       assert(
         'the old event-snapshot API is gone',
@@ -3600,10 +3600,62 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         build === null || build({ toolRun: { count: 0, since: T, name: 'bash' } }, T + 9_000, stubT) === null,
       )
       assert(
-        'the marker and the total column share one sentence',
-        /* Two phrasings would invite a reader to look for a difference that does not exist. */
-        /column === 'index' \|\| column === 'total'/.test(source) &&
+        'the marker and the total column each ask for their own hint',
+        /*
+         * The total column always speaks about a running tool; the marker speaks about whatever
+         * its glyph means, so the two are deliberately separate now.
+         */
+        /if \(column === 'index'\) return liveMarkerHint\(live, t\)/.test(source) &&
+          /if \(column === 'total'\) \{/.test(source) &&
           /return toolRunHint\(live, Date\.now\(\), t\)/.test(source),
+      )
+      assert(
+        'the marker hint is built from the live reading, executed here',
+        /*
+         * Run the builder rather than pattern-match it: the span has to come from the reading's
+         * own total, and a switch has to win over the plain writing wording.
+         */
+        (() => {
+          const start = source.indexOf('function liveMarkerHint(')
+          const stop = source.indexOf('\n    /**', start)
+          if (start < 0 || stop < 0) return false
+          const bodyText = source
+            .slice(start, stop)
+            .replace('function liveMarkerHint(live, t)', 'return function (live, t)')
+          let fn
+          try {
+            fn = new Function('numberOrNull', 'toolRunHint', 'modelHintText', 'Date', bodyText)(
+              (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
+              () => 'TOOL',
+              () => 'stub/model',
+              Date,
+            )
+          } catch {
+            return false
+          }
+          const stub = (key, params) =>
+            params === undefined ? key : `${key} model=${params.model} elapsed=${params.elapsed}`
+          const writing = fn({ compaction: null, phase: 'writing', totalMs: 3_400, model: 'm', switched: false }, stub)
+          const switched = fn({ compaction: null, phase: 'writing', totalMs: 3_400, model: 'm', switched: true }, stub)
+          const noModel = fn({ compaction: null, phase: 'writing', totalMs: 3_400, model: null, switched: false }, stub)
+          const tools = fn({ compaction: null, phase: 'tools', totalMs: 3_400, model: 'm', switched: false }, stub)
+          return (
+            writing.includes('liveWritingHint') &&
+            writing.includes('elapsed=3.4') &&
+            switched.includes('liveSwitchedHint') &&
+            noModel.includes('liveWritingNoModelHint') &&
+            tools === 'TOOL'
+          )
+        })(),
+      )
+      assert(
+        'a plain bolt says it is writing, and names the model when known',
+        /t\('liveWritingHint', \{ model: modelHintText\(live, t\), elapsed: span \}\)/.test(source) &&
+          /t\('liveWritingNoModelHint', \{ elapsed: span \}\)/.test(source),
+      )
+      assert(
+        'the compactor bars stay silent, since the speed column already names them',
+        /if \(live\.compaction !== null && live\.compaction !== undefined\) return null/.test(source),
       )
       assert(
         'the live clock reports an absolute stamp rather than a relative one',

@@ -129,6 +129,12 @@ window.__ModuleLoader__.load({
       rowConfigChangedUnknown: '该行请求配置变更，缓存前缀失效',
       /* A running tool call, shared by the marker and the total column. */
       toolRunningHint: '正在调用工具 {name} · 已用 {elapsed} s',
+      /* The bolt marker: what the live row is doing, and for how long. */
+      liveWritingHint: '正在生成 · {model} · 已用 {elapsed} s',
+      liveWritingNoModelHint: '正在生成 · 已用 {elapsed} s',
+      /* A blue live row switched models on this very request. */
+      liveSwitchedHint: '已切换至 {model} · 已用 {elapsed} s',
+      liveSwitchedNoModelHint: '已切换模型 · 已用 {elapsed} s',
       toolRunningUnnamed: '工具',
       hintTime: '请求发出的时刻（本地时间）',
       hintTtft: '从发出到收到第一个 token 的耗时',
@@ -199,6 +205,10 @@ window.__ModuleLoader__.load({
       rowConfigChanged: 'Request configuration changed on this row (tools {from}→{to})',
       rowConfigChangedUnknown: 'Request configuration changed on this row; the cached prefix was lost',
       toolRunningHint: 'Calling {name} · {elapsed} s elapsed',
+      liveWritingHint: 'Writing · {model} · {elapsed} s elapsed',
+      liveWritingNoModelHint: 'Writing · {elapsed} s elapsed',
+      liveSwitchedHint: 'Switched to {model} · {elapsed} s elapsed',
+      liveSwitchedNoModelHint: 'Switched models · {elapsed} s elapsed',
       toolRunningUnnamed: 'a tool',
       hintTime: 'When the request was issued (local time)',
       hintTtft: 'Time from issuing the request to receiving its first token',
@@ -2004,8 +2014,39 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The row-number hint, or an empty list when the row is not highlighted.
+     * The live row's marker hint, chosen by what the marker is showing.
      *
+     * Three glyphs stand for three situations, and each has something different to say:
+     *
+     * - the compactor bars already name themselves in the speed column, so the marker stays quiet;
+     * - the T is a running tool call, with its name and span;
+     * - the bolt is a reply being written. A BLUE bolt is a reply written after a model switch, so
+     *   it leads with that, mirroring what a numbered row's number says — the reader hovered the
+     *   marker exactly because the row changed colour and wants to know why.
+     *
+     * The span is measured from the step's own start, the same origin the total column counts
+     * from, so the two can never disagree.
+     */
+    function liveMarkerHint(live, t) {
+      if (live === null) return null
+      if (live.compaction !== null && live.compaction !== undefined) return null
+      if (live.phase === 'tools') return toolRunHint(live, Date.now(), t)
+      const elapsed = numberOrNull(live.totalMs)
+      const span = elapsed === null ? '0.0' : (Math.max(0, elapsed) / 1000).toFixed(1)
+      const model = typeof live.model === 'string' && live.model !== '' ? live.model : null
+      if (live.switched === true) {
+        return model === null
+          ? t('liveSwitchedNoModelHint', { elapsed: span })
+          : t('liveSwitchedHint', { model: modelHintText(live, t), elapsed: span })
+      }
+      return model === null
+        ? t('liveWritingNoModelHint', { elapsed: span })
+        : t('liveWritingHint', { model: modelHintText(live, t), elapsed: span })
+    }
+
+
+    /**
+     * The row-number hint, or an empty list when the row is not highlighted.
      * A highlighted row is worth explaining, and the number column is the one place that has room
      * without competing with a figure. Two independent reasons can apply, so the result is a list
      * of lines rather than a sentence:
@@ -3894,7 +3935,8 @@ window.__ModuleLoader__.load({
         if (tipAnchor.startsWith('live:')) {
           if (live === null) return null
           const column = tipAnchor.slice('live:'.length)
-          if (column === 'index' || column === 'total') {
+          if (column === 'index') return liveMarkerHint(live, t)
+          if (column === 'total') {
             /* The running-tool sentence; nothing to say once every tool has returned. */
             return toolRunHint(live, Date.now(), t)
           }
