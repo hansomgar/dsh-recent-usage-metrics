@@ -2304,7 +2304,12 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       const tree3 = await runtime.render(status.component, statusProps)
       const numbered = findAll(
         tree3,
-        (el) => String(el.props.className ?? '').includes('dsh-rum-item'),
+        (el) => {
+          const cls = String(el.props.className ?? '')
+          /* The live row now carries dsh-rum-item too — it has to, or the highlight rules
+           * would not reach it — so the live row is excluded explicitly here. */
+          return cls.includes('dsh-rum-item') && !cls.includes('dsh-rum-live-row')
+        },
       )
       assert(
         'a full page of ten rows remains while a request streams',
@@ -4195,9 +4200,11 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       )[0]
       if (opener !== undefined) opener.props.onClick({ stopPropagation() {}, preventDefault() {} })
       const reopenedTree = await runtime.render(status.component, compactingProps)
-      const compactionRow = findAll(reopenedTree, (el) =>
-        String(el.props.className ?? '').includes('dsh-rum-item'),
-      ).find((row) => {
+      const compactionRow = findAll(reopenedTree, (el) => {
+        const cls = String(el.props.className ?? '')
+        /* Skip the live row: it carries dsh-rum-item now, and it is not a settled record. */
+        return cls.includes('dsh-rum-item') && !cls.includes('dsh-rum-live-row')
+      }).find((row) => {
         const cells = findAll(row, (el) => String(el.props.className ?? '').includes('dsh-rum-col'))
         return cells.length >= 5
       })
@@ -4294,6 +4301,37 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 
   /* ---------------------------------------------------------------- */
+
+  /*
+   * The live row must carry the class the highlight rules key on.
+   *
+   * Those rules are written as `.dsh-rum-item[data-switched="true"]`. The live row used to have
+   * only `dsh-rum-row dsh-rum-live-row`, so its attributes were set and then ignored by the
+   * stylesheet: a switched live row reported `switched: true` in its own data and still drew
+   * grey. The class is part of the contract, not decoration.
+   */
+  {
+    const css = styleEls[0].textContent
+    assert(
+      'the live row carries dsh-rum-item so the highlight rules can reach it',
+      /className: 'dsh-rum-row dsh-rum-item dsh-rum-live-row'/.test(source),
+    )
+    assert(
+      'every highlight rule is scoped to that class',
+      /*
+       * If a rule were ever written against dsh-rum-live-row alone, the numbered rows would lose
+       * the highlight; scoping both to the shared class keeps one stylesheet for both.
+       */
+      /\.dsh-rum-item\[data-switched="true"\]\s*\{/.test(css) &&
+        /\.dsh-rum-item\[data-lowcache="true"\]\s*\{/.test(css) &&
+        !/\.dsh-rum-live-row\[data-switched/.test(css),
+    )
+    assert(
+      'the live row sets the switch attribute from its own reading',
+      /'data-switched': live\.switched === true \? 'true' : undefined/.test(source),
+    )
+  }
+
   /* Disposal                                                          */
   /* ---------------------------------------------------------------- */
 

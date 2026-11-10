@@ -2858,6 +2858,7 @@ window.__ModuleLoader__.load({
         liveStep === null || livePlan === undefined
           ? undefined
           : livePlan.get(`${liveStep.turn}:${liveStep.step}`)
+
       /*
        * A compaction has no step to measure, so the reading is built from the compaction alone:
        * its own clock, its own span and its own model. Returning here keeps every step-shaped
@@ -4174,7 +4175,13 @@ window.__ModuleLoader__.load({
                       ? h(
                           'div',
                           {
-                            className: 'dsh-rum-row dsh-rum-live-row',
+                            /*
+ * `dsh-rum-item` is part of the identity, not decoration: the highlight rules are written
+ * as `.dsh-rum-item[data-switched="true"]`, so a row without it silently ignores its own
+ * attributes. The live row used to be the only row missing the class, which is why a
+ * switched live row never turned blue.
+ */
+                            className: 'dsh-rum-row dsh-rum-item dsh-rum-live-row',
                             role: 'row',
                             /*
                              * The live row carries the same two highlights as a settled one, so a
