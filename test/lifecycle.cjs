@@ -4458,7 +4458,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       if (start < 0 || stop < 0) return null
       const bodyText = source
         .slice(start, stop)
-        .replace('function pillHint(live, base, t)', 'return function (live, base, t)')
+        .replace('function pillHint(live, base, t, now)', 'return function (live, base, t, now)')
       try {
         return new Function(
           'numberOrNull', 'liveMarkerHint', 'tokensExact', 'h', bodyText,
@@ -4505,7 +4505,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     assert(
       'an active pill delegates to the marker sentence instead of restating it',
       /* Two phrasings for one request would invite a search for a difference that is not there. */
-      build === null || build({ phase: 'writing' }, { at: today }, stubT) === 'MARKER',
+      build === null || build({ phase: 'writing' }, { at: today }, stubT, now) === 'MARKER',
     )
     assert(
       'an idle pill reports what the pill cannot show, and repeats none of its figures',
@@ -4513,7 +4513,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         const out = build === null ? '' : build(null, {
           at: today, step: 55, provider: 'buddy', model: 'deepseek-v4.1-flash',
           context: 585_344, cacheHit: 0.999, toolCalls: 1, toolMs: 100,
-        }, stubT)
+        }, stubT, now)
         return (
           flat(out).includes('step 55') &&
           flat(out).includes('buddy/deepseek-v4.1-flash') &&
@@ -4539,7 +4539,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         const out = build === null ? null : build(null, {
           at: today, step: 3, provider: 'buddy', model: 'm',
           context: 1, cacheHit: 0.5, toolCalls: 1, toolMs: 100,
-        }, stubT)
+        }, stubT, now)
         if (out === null || typeof out !== 'object') return false
         const rows = (out.children ?? []).filter((child) => typeof child === 'object')
         if (rows.length !== 2) return false
@@ -4549,18 +4549,19 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       })(),
     )
     assert(
-      'the idle hint reports the step rather than a moment',
+      'the idle hint reports the step and the moment it ran',
       /*
-       * The moment answered "when", which nobody asks of the figure in front of them. The step
-       * answers "which one of this turn", which the pill cannot say any other way.
+       * Both, not one: the step says which one of this turn, the clock says when — and once the
+       * reading is older than the session in front of you, the step alone leaves that open.
        */
       (() => {
         const out = build === null ? null : build(null, {
           at: yesterday, step: 7, provider: 'buddy', model: 'm',
           context: 1, cacheHit: 0.5, toolCalls: 0, toolMs: null,
-        }, stubT)
+        }, stubT, now)
         const text = flat(out)
-        return text.includes('step 7') && !/\d\d:\d\d:\d\d/.test(text)
+        /* The date prefix is what marks it as another day; the time alone is ambiguous. */
+        return text.includes('step 7') && text.includes('11-10 21:26:32')
       })(),
     )
     assert(
@@ -4573,7 +4574,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         const out = build === null ? '' : build(null, {
           at: today, provider: 'trae', model: 'm',
           context: 370_683, cacheHit: null, toolCalls: 0, toolMs: null,
-        }, stubT)
+        }, stubT, now)
         return flat(out).includes('cache —') && flat(out).includes('tools 0')
       })(),
     )
@@ -4585,7 +4586,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
        */
       /hint\.enter\('pill', event\)/.test(source) &&
         /hint\.leave\(\)\s*\r?\n\s*setPinned/.test(source) &&
-        /if \(tipAnchor === 'pill'\) return pillHint\(live, derivedRows\[0\] \?\? null, t\)/.test(source),
+        /if \(tipAnchor === 'pill'\) return pillHint\(live, derivedRows\[0\] \?\? null, t, now\)/.test(source),
     )
   }
 

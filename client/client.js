@@ -2120,7 +2120,7 @@ window.__ModuleLoader__.load({
      * not report this", which is information; an absent segment says nothing and reads as if the
      * plugin forgot to measure it.
      */
-function pillHint(live, base, t) {
+function pillHint(live, base, t, now) {
       if (live !== null) return liveMarkerHint(live, t)
       if (base === null || base === undefined) return null
       /*
@@ -2131,12 +2131,34 @@ function pillHint(live, base, t) {
       const identity = []
       const cost = []
       /*
-       * The pill leads with the step, not the moment. The moment answers "when", which nobody
-       * asks of the figure in front of them; the step answers "which one of this turn", which
-       * the pill otherwise cannot say at all.
+       * The pill leads with the step, then the moment it ran.
+       *
+       * The list index cannot say which step this was, and the pill has no other way to say it;
+       * the clock cannot say it either, but it answers "when", which the step alone leaves open
+       * once the reading is older than the session in front of you. Both fit on one line.
        */
       const stepNo = numberOrNull(base.step)
-      identity.push(stepNo === null ? t('none') : t('pillStep', { step: stepNo }))
+      const at = numberOrNull(base.at)
+      /*
+       * The date only earns its width when the reading is not from today. A step from an earlier
+       * day is indistinguishable from one just now without it.
+       */
+      const clock = at === null
+        ? t('none')
+        : (() => {
+            const date = new Date(at)
+            const pad = (value) => String(value).padStart(2, '0')
+            const time = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+            const midnight = new Date(now)
+            midnight.setHours(0, 0, 0, 0)
+            if (at >= midnight.getTime()) return time
+            return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`
+          })()
+      identity.push(
+        stepNo === null
+          ? clock
+          : `${t('pillStep', { step: stepNo })} ${clock}`,
+      )
       const model = typeof base.model === 'string' && base.model !== '' ? base.model : null
       const provider = typeof base.provider === 'string' && base.provider !== '' ? base.provider : null
       if (model !== null) {
@@ -4064,7 +4086,7 @@ function pillHint(live, base, t) {
         if (tipAnchor === null) return null
 
         /* The status pill reports one request; see pillHint for what it adds to the drawer. */
-        if (tipAnchor === 'pill') return pillHint(live, derivedRows[0] ?? null, t)
+        if (tipAnchor === 'pill') return pillHint(live, derivedRows[0] ?? null, t, now)
 
         if (tipAnchor.startsWith('header:')) {
           const column = tipAnchor.slice('header:'.length)
