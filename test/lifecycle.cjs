@@ -3865,21 +3865,26 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       assert(
         'a cold row that changed its configuration explains the change and the cold cache',
         /*
+         * Every row now leads with its position, so the highlight reasons start at index 1.
          * Step 2's predecessor issued no header, so only ONE tool count is known — the line says
-         * the configuration changed without inventing the other number. Both lines must appear:
-         * the cause first, then the measurement.
+         * the configuration changed without inventing the other number.
          */
-        configLines.length === 2 &&
-          configLines[0] === 'rowConfigChangedUnknown' &&
-          configLines[1].startsWith('rowLowCache'),
+        configLines.length === 3 &&
+          configLines[0].startsWith('stepPosition') &&
+          configLines[1] === 'rowConfigChangedUnknown' &&
+          configLines[2].startsWith('rowLowCache'),
       )
       assert(
         'a switched row names the model instead',
         switchLines.some((line) => line.startsWith('rowSwitched')),
       )
       assert(
-        'an ordinary row gets no hint at all',
-        build === null || build(row(4), stubT).length === 0,
+        'an ordinary row still gets its position, and nothing else',
+        /* It used to get nothing, which made the column feel inert outside the highlight cases. */
+        (() => {
+          const lines2 = build === null ? [] : build(row(4), stubT)
+          return lines2.length === 1 && lines2[0].startsWith('stepPosition')
+        })(),
       )
     }
 
@@ -4453,7 +4458,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       if (start < 0 || stop < 0) return null
       const bodyText = source
         .slice(start, stop)
-        .replace('function pillHint(live, base, t, now)', 'return function (live, base, t, now)')
+        .replace('function pillHint(live, base, t)', 'return function (live, base, t)')
       try {
         return new Function(
           'numberOrNull', 'liveMarkerHint', 'tokensExact', 'h', bodyText,
@@ -4469,7 +4474,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     })()
     const dict = {
       none: '—',
-      pillLast: (p) => `last ${p.clock}`,
+      pillStep: (p) => `step ${p.step}`,
       pillModel: (p) => `${p.provider}/${p.model}`,
       pillInput: (p) => `in ${p.input}`,
       pillCache: (p) => `cache ${p.hit}`,
@@ -4500,17 +4505,17 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     assert(
       'an active pill delegates to the marker sentence instead of restating it',
       /* Two phrasings for one request would invite a search for a difference that is not there. */
-      build === null || build({ phase: 'writing' }, { at: today }, stubT, now) === 'MARKER',
+      build === null || build({ phase: 'writing' }, { at: today }, stubT) === 'MARKER',
     )
     assert(
       'an idle pill reports what the pill cannot show, and repeats none of its figures',
       (() => {
         const out = build === null ? '' : build(null, {
-          at: today, provider: 'buddy', model: 'deepseek-v4.1-flash',
+          at: today, step: 55, provider: 'buddy', model: 'deepseek-v4.1-flash',
           context: 585_344, cacheHit: 0.999, toolCalls: 1, toolMs: 100,
-        }, stubT, now)
+        }, stubT)
         return (
-          flat(out).includes('last 11:38:01') &&
+          flat(out).includes('step 55') &&
           flat(out).includes('buddy/deepseek-v4.1-flash') &&
           flat(out).includes('in 585344') &&
           flat(out).includes('cache 99.9%') &&
@@ -4532,25 +4537,30 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
        */
       (() => {
         const out = build === null ? null : build(null, {
-          at: today, provider: 'buddy', model: 'm',
+          at: today, step: 3, provider: 'buddy', model: 'm',
           context: 1, cacheHit: 0.5, toolCalls: 1, toolMs: 100,
-        }, stubT, now)
+        }, stubT)
         if (out === null || typeof out !== 'object') return false
         const rows = (out.children ?? []).filter((child) => typeof child === 'object')
         if (rows.length !== 2) return false
         const one = flat(rows[0])
         const two = flat(rows[1])
-        return one.includes('last') && !one.includes('in ') && two.includes('in ') && !two.includes('last')
+        return one.startsWith('step ') && !one.includes('in ') && two.startsWith('in ') && !two.includes('step ')
       })(),
     )
     assert(
-      'a reading from an earlier day carries its date',
+      'the idle hint reports the step rather than a moment',
+      /*
+       * The moment answered "when", which nobody asks of the figure in front of them. The step
+       * answers "which one of this turn", which the pill cannot say any other way.
+       */
       (() => {
-        const out = build === null ? '' : build(null, {
-          at: yesterday, provider: 'buddy', model: 'm',
+        const out = build === null ? null : build(null, {
+          at: yesterday, step: 7, provider: 'buddy', model: 'm',
           context: 1, cacheHit: 0.5, toolCalls: 0, toolMs: null,
-        }, stubT, now)
-        return flat(out).includes('last 11-10 21:26:32')
+        }, stubT)
+        const text = flat(out)
+        return text.includes('step 7') && !/\d\d:\d\d:\d\d/.test(text)
       })(),
     )
     assert(
@@ -4563,7 +4573,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         const out = build === null ? '' : build(null, {
           at: today, provider: 'trae', model: 'm',
           context: 370_683, cacheHit: null, toolCalls: 0, toolMs: null,
-        }, stubT, now)
+        }, stubT)
         return flat(out).includes('cache —') && flat(out).includes('tools 0')
       })(),
     )
@@ -4575,7 +4585,100 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
        */
       /hint\.enter\('pill', event\)/.test(source) &&
         /hint\.leave\(\)\s*\r?\n\s*setPinned/.test(source) &&
-        /if \(tipAnchor === 'pill'\) return pillHint\(live, derivedRows\[0\] \?\? null, t, now\)/.test(source),
+        /if \(tipAnchor === 'pill'\) return pillHint\(live, derivedRows\[0\] \?\? null, t\)/.test(source),
+    )
+  }
+
+
+  /*
+   * The number column says where a row sits, and only the position fixes that.
+   *
+   * The list index cannot answer it: #1 is whichever step is newest, not step one, and the ten
+   * rows can span two turns. A row used to get a hint only when it was highlighted, which made
+   * the column feel inert the rest of the time.
+   */
+  {
+    const pos = source.indexOf('function rowHintLines(')
+    const posEnd = source.indexOf('\n    /**', pos)
+    const bodyText = pos < 0 || posEnd < 0 ? '' : source.slice(pos, posEnd)
+    assert(
+      'every numbered row leads with its turn and step',
+      /lines\.push\(t\('stepPosition', \{ turn, step \}\)\)/.test(bodyText),
+    )
+    assert(
+      'a plain row is answered with its position, executed rather than matched',
+      /*
+       * Run it: a predicate that is present but never reached would pass a source check while
+       * leaving the column silent, which is exactly the state this change removed.
+       */
+      (() => {
+        if (pos < 0 || posEnd < 0) return false
+        const lifted = bodyText
+          .replace('function rowHintLines(row, t)', 'return function (row, t)')
+        let fn
+        try {
+          fn = new Function(
+            'numberOrNull', 'modelHintText', 'isLowCacheHit', 'LOW_CACHE_HIT', lifted,
+          )(
+            (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
+            () => 'model',
+            () => false,
+            0.9,
+          )
+        } catch {
+          return false
+        }
+        const stub = (key, params) =>
+          params === undefined ? key : `${key} ${JSON.stringify(params)}`
+        const plain = fn({ turn: 7, step: 3, compaction: false, switched: false }, stub)
+        const compacted = fn({ turn: 7, step: null, compaction: true, switched: false }, stub)
+        return (
+          plain.length === 1 &&
+          plain[0].startsWith('stepPosition') &&
+          compacted.length === 1 &&
+          compacted[0].startsWith('rowCompactionPosition')
+        )
+      })(),
+    )
+    assert(
+      'a compaction names its turn and says it is a compaction, having no step',
+      /lines\.push\(t\('rowCompactionPosition', \{ turn \}\)\)/.test(bodyText) &&
+        /if \(row\.compaction === true\) \{/.test(bodyText),
+    )
+    assert(
+      'a step with no turn falls back to the step alone',
+      /lines\.push\(t\('stepPositionShort', \{ step \}\)\)/.test(bodyText),
+    )
+    assert(
+      'the row carries its own turn and step, not just a composite key',
+      /turn: numberOrNull\(entry\.turn\)/.test(source) &&
+        /step: numberOrNull\(entry\.step\)/.test(source) &&
+        /turn: numberOrNull\(compaction\.turn\)/.test(source),
+    )
+    assert(
+      'the pill leads with the step rather than a moment',
+      (() => {
+        const start = source.indexOf('function pillHint(')
+        const stop = source.indexOf('\n    /**', start)
+        if (start < 0 || stop < 0) return false
+        const body = source.slice(start, stop)
+        return /t\('pillStep', \{ step: stepNo \}\)/.test(body) && !/pillLast/.test(body)
+      })(),
+    )
+    assert(
+      'a shared hint box has no floor; only the pill asks for one',
+      /*
+       * A global min-width stretched a four-character header hint to the width chosen for the
+       * pill two-line reading. The floor now belongs to data-wide.
+       */
+      (() => {
+        const css = styleEls[0].textContent
+        const base = css.slice(css.indexOf('.dsh-rum-tip {'), css.indexOf('.dsh-rum-tip[data-wide'))
+        return (
+          !/min-width/.test(base.replace(/\/\*[\s\S]*?\*\//g, '')) &&
+          /\.dsh-rum-tip\[data-wide="true"\]\s*\{[^}]*min-width:\s*240px/.test(css)
+        )
+      })(),
     )
   }
 

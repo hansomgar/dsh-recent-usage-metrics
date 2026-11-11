@@ -141,7 +141,11 @@ window.__ModuleLoader__.load({
        * The idle pill's hint. It reports only what the pill cannot show: the other five figures are
        * already on screen, so repeating them would waste the one line available.
        */
-      pillLast: '上次请求 {clock}',
+      pillStep: '第 {step} 步',
+      /* The numbered row's own position, which the list index cannot express. */
+      stepPosition: '第 {turn} 轮第 {step} 步',
+      stepPositionShort: '第 {step} 步',
+      rowCompactionPosition: '第 {turn} 轮 · 压缩',
       pillModel: '{provider} / {model}',
       pillInput: '输入 {input}',
       pillCache: '缓存命中 {hit}',
@@ -224,7 +228,10 @@ window.__ModuleLoader__.load({
       liveSwitchedHint: 'Switched to {model} · {elapsed} s elapsed',
       liveSwitchedNoModelHint: 'Switched models · {elapsed} s elapsed',
       liveCompactingHint: 'Compacting with {model}, {elapsed} s elapsed',
-      pillLast: 'Last request {clock}',
+      pillStep: 'step {step}',
+      stepPosition: 'turn {turn}, step {step}',
+      stepPositionShort: 'step {step}',
+      rowCompactionPosition: 'turn {turn} · compaction',
       pillModel: '{provider} / {model}',
       pillInput: 'Input {input}',
       pillCache: 'cache hit {hit}',
@@ -703,10 +710,10 @@ window.__ModuleLoader__.load({
   z-index: 2147483100;
   max-width: 320px;
   /*
-   * A floor as well as a ceiling: the idle hint is two lines whose width depends on the model
-   * name and the tool count, so without one the box would visibly resize between readings.
+   * No floor here. This class is shared by every hint, and a global min-width would stretch a
+   * four-character header hint to the width chosen for the pill's two-line reading. A floor is
+   * only wanted where a hint's own width varies between readings; see data-wide below.
    */
-  min-width: 240px;
   padding: 7px 9px;
   border-radius: var(--dsw-radius-sm);
   border: 1px solid var(--dsw-alias-border-l1, transparent);
@@ -720,6 +727,13 @@ window.__ModuleLoader__.load({
   margin-top: -8px;
   pointer-events: none;
   white-space: normal;
+}
+/*
+ * The pill's idle hint is two lines whose width depends on the model name and the tool count,
+ * so it alone asks for a floor: without one the box would resize between readings.
+ */
+.dsh-rum-tip[data-wide="true"] {
+  min-width: 240px;
 }
 /* The glyphs the index hint names, drawn inline so the hint can show them rather than spell them. */
 .dsh-rum-tip svg {
@@ -1211,6 +1225,9 @@ window.__ModuleLoader__.load({
       const speed = numberOrNull(stats.tps)
       return {
         key: `${entry.turn}:${entry.step}`,
+        /* The position, for the number hint: a list index says nothing about where it sits. */
+        turn: numberOrNull(entry.turn),
+        step: numberOrNull(entry.step),
         at: numberOrNull(stats.startTime) ?? numberOrNull(stats.endTime),
         startMs: numberOrNull(stats.startTime),
         ttftMs,
@@ -1302,6 +1319,9 @@ window.__ModuleLoader__.load({
         key: `compaction:${compaction.compactionId}`,
         compaction: true,
         compactionId: compaction.compactionId,
+        /* A compaction has a turn but no step, which is exactly what its hint reports. */
+        turn: numberOrNull(compaction.turn),
+        step: null,
         running,
         at: startMs,
         startMs,
@@ -2100,7 +2120,7 @@ window.__ModuleLoader__.load({
      * not report this", which is information; an absent segment says nothing and reads as if the
      * plugin forgot to measure it.
      */
-    function pillHint(live, base, t, now) {
+function pillHint(live, base, t) {
       if (live !== null) return liveMarkerHint(live, t)
       if (base === null || base === undefined) return null
       /*
@@ -2110,20 +2130,13 @@ window.__ModuleLoader__.load({
        */
       const identity = []
       const cost = []
-      const at = numberOrNull(base.at)
-      /* The date only earns its width when the reading is not from today. */
-      const clock = at === null
-        ? t('none')
-        : (() => {
-            const date = new Date(at)
-            const pad = (value) => String(value).padStart(2, '0')
-            const time = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-            const midnight = new Date(now)
-            midnight.setHours(0, 0, 0, 0)
-            if (at >= midnight.getTime()) return time
-            return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`
-          })()
-      identity.push(t('pillLast', { clock }))
+      /*
+       * The pill leads with the step, not the moment. The moment answers "when", which nobody
+       * asks of the figure in front of them; the step answers "which one of this turn", which
+       * the pill otherwise cannot say at all.
+       */
+      const stepNo = numberOrNull(base.step)
+      identity.push(stepNo === null ? t('none') : t('pillStep', { step: stepNo }))
       const model = typeof base.model === 'string' && base.model !== '' ? base.model : null
       const provider = typeof base.provider === 'string' && base.provider !== '' ? base.provider : null
       if (model !== null) {
@@ -2175,7 +2188,24 @@ window.__ModuleLoader__.load({
      */
     function rowHintLines(row, t) {
       const lines = []
-      if (row.compaction === true) return lines
+      /*
+       * Every row leads with where it sits. The list index cannot answer that: #1 is whichever
+       * step is newest, not step one, and two turns can share a list. The position is therefore
+       * the hint a plain row gets — it used to get nothing at all, which made the column feel
+       * inert outside the two highlight cases.
+       */
+      const turn = numberOrNull(row.turn)
+      const step = numberOrNull(row.step)
+      if (row.compaction === true) {
+        /* A compaction has a turn but no step, and says so rather than printing a blank. */
+        if (turn !== null) lines.push(t('rowCompactionPosition', { turn }))
+        return lines
+      }
+      if (turn !== null && step !== null) {
+        lines.push(t('stepPosition', { turn, step }))
+      } else if (step !== null) {
+        lines.push(t('stepPositionShort', { step }))
+      }
       if (row.switched === true) {
         lines.push(t('rowSwitched', { model: modelHintText(row, t) }))
       }
@@ -2330,7 +2360,7 @@ window.__ModuleLoader__.load({
      * below the anchor when there is no room above.
      */
     function Tooltip(props) {
-      const { open, x, y, children } = props
+      const { open, x, y, children, wide } = props
       if (!open) return null
       return portal(
         h(
@@ -2338,6 +2368,8 @@ window.__ModuleLoader__.load({
           {
             className: 'dsh-rum-tip',
             role: 'tooltip',
+            /* Only a hint whose width varies between readings asks for a floor. */
+            'data-wide': wide === true ? 'true' : undefined,
             style: { left: `${x}px`, top: `${y}px` },
           },
           children,
@@ -4032,7 +4064,7 @@ window.__ModuleLoader__.load({
         if (tipAnchor === null) return null
 
         /* The status pill reports one request; see pillHint for what it adds to the drawer. */
-        if (tipAnchor === 'pill') return pillHint(live, derivedRows[0] ?? null, t, now)
+        if (tipAnchor === 'pill') return pillHint(live, derivedRows[0] ?? null, t)
 
         if (tipAnchor.startsWith('header:')) {
           const column = tipAnchor.slice('header:'.length)
@@ -4203,6 +4235,8 @@ window.__ModuleLoader__.load({
           open: tipContent !== null,
           x: hint.origin?.x ?? 0,
           y: hint.origin?.y ?? 0,
+          /* The pill's reading is the one hint whose width moves; give it a floor. */
+          wide: tipAnchor === 'pill',
           children: tipContent,
         }),
         mounted
