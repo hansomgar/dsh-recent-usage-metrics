@@ -4437,6 +4437,117 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     )
   }
 
+
+  /*
+   * The status pill's hint.
+   *
+   * The pill and the drawer show one request, so while something is happening the pill repeats
+   * the marker sentence rather than inventing its own. When idle it reports only what the pill
+   * cannot: the moment, the model, the input side, the cache, and the tool cost — its five visible
+   * figures would be noise on a one-line hint.
+   */
+  {
+    const build = (() => {
+      const start = source.indexOf('function pillHint(')
+      const stop = source.indexOf('\n    /**', start)
+      if (start < 0 || stop < 0) return null
+      const bodyText = source
+        .slice(start, stop)
+        .replace('function pillHint(live, base, t, now)', 'return function (live, base, t, now)')
+      try {
+        return new Function(
+          'numberOrNull', 'liveMarkerHint', 'tokensExact', bodyText,
+        )(
+          (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
+          () => 'MARKER',
+          (v) => (v === null || v === undefined ? '—' : String(Math.round(v))),
+        )
+      } catch {
+        return null
+      }
+    })()
+    const dict = {
+      none: '—',
+      pillLast: (p) => `last ${p.clock}`,
+      pillModel: (p) => `${p.provider}/${p.model}`,
+      pillInput: (p) => `in ${p.input}`,
+      pillCache: (p) => `cache ${p.hit}`,
+      pillTools: (p) => `tools ${p.count} ${p.elapsed}`,
+      pillToolsNone: 'tools 0',
+      pillSep: ' | ',
+    }
+    const stubT = (key, params) => {
+      const value = dict[key]
+      if (value === undefined) return key
+      return typeof value === 'function' ? value(params ?? {}) : value
+    }
+    const now = new Date('2026-11-11T11:40:00+08:00').getTime()
+    const today = new Date('2026-11-11T11:38:01+08:00').getTime()
+    const yesterday = new Date('2026-11-10T21:26:32+08:00').getTime()
+
+    assert(
+      'an active pill delegates to the marker sentence instead of restating it',
+      /* Two phrasings for one request would invite a search for a difference that is not there. */
+      build === null || build({ phase: 'writing' }, { at: today }, stubT, now) === 'MARKER',
+    )
+    assert(
+      'an idle pill reports what the pill cannot show, and repeats none of its figures',
+      (() => {
+        const out = build === null ? '' : build(null, {
+          at: today, provider: 'buddy', model: 'deepseek-v4.1-flash',
+          context: 585_344, cacheHit: 0.999, toolCalls: 1, toolMs: 100,
+        }, stubT, now)
+        return (
+          out.includes('last 11:38:01') &&
+          out.includes('buddy/deepseek-v4.1-flash') &&
+          out.includes('in 585344') &&
+          out.includes('cache 99.9%') &&
+          out.includes('tools 1 0.1 s') &&
+          /*
+           * The five figures on the pill must NOT reappear here — the hint exists for what the
+           * pill cannot show, and a one-line box has no room to waste.
+           */
+          !/tok\/s/.test(out) &&
+          !/ tok\b/.test(out)
+        )
+      })(),
+    )
+    assert(
+      'a reading from an earlier day carries its date',
+      (() => {
+        const out = build === null ? '' : build(null, {
+          at: yesterday, provider: 'buddy', model: 'm',
+          context: 1, cacheHit: 0.5, toolCalls: 0, toolMs: null,
+        }, stubT, now)
+        return out.includes('last 11-10 21:26:32')
+      })(),
+    )
+    assert(
+      'an unreported cache shows a dash rather than disappearing',
+      /*
+       * A dash says the upstream did not report it; an absent segment reads as if the plugin
+       * forgot to measure. The user asked for exactly this distinction.
+       */
+      (() => {
+        const out = build === null ? '' : build(null, {
+          at: today, provider: 'trae', model: 'm',
+          context: 370_683, cacheHit: null, toolCalls: 0, toolMs: null,
+        }, stubT, now)
+        return out.includes('cache —') && out.includes('tools 0')
+      })(),
+    )
+    assert(
+      'the pill carries its own anchor and a click dismisses the hint',
+      /*
+       * Tapping the pill opens the drawer, and two overlays at once would collide — so the click
+       * closes the hint before it toggles the drawer.
+       */
+      /hint\.enter\('pill', event\)/.test(source) &&
+        /hint\.leave\(\)\s*\r?\n\s*setPinned/.test(source) &&
+        /if \(tipAnchor === 'pill'\) return pillHint\(live, derivedRows\[0\] \?\? null, t, now\)/.test(source),
+    )
+  }
+
   /* Disposal                                                          */
   /* ---------------------------------------------------------------- */
 

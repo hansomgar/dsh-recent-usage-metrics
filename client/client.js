@@ -137,6 +137,18 @@ window.__ModuleLoader__.load({
       liveSwitchedNoModelHint: '已切换模型 · 已用 {elapsed} s',
       /* The compaction bars: which model is summarising, and for how long. */
       liveCompactingHint: '正在使用 {model} 压缩，已用 {elapsed} s',
+      /*
+       * The idle pill's hint. It reports only what the pill cannot show: the other five figures are
+       * already on screen, so repeating them would waste the one line available.
+       */
+      pillLast: '上次请求 {clock}',
+      pillModel: '{provider} / {model}',
+      pillInput: '输入 {input}',
+      pillCache: '缓存 {hit}',
+      pillTools: '工具 {count} 次 {elapsed}',
+      pillToolsNone: '工具 0 次',
+      /* One separator for every part, so the line reads as a list rather than a sentence. */
+      pillSep: ' · ',
       toolRunningUnnamed: '工具',
       hintTime: '请求发出的时刻（本地时间）',
       hintTtft: '从发出到收到第一个 token 的耗时',
@@ -212,6 +224,13 @@ window.__ModuleLoader__.load({
       liveSwitchedHint: 'Switched to {model} · {elapsed} s elapsed',
       liveSwitchedNoModelHint: 'Switched models · {elapsed} s elapsed',
       liveCompactingHint: 'Compacting with {model}, {elapsed} s elapsed',
+      pillLast: 'Last request {clock}',
+      pillModel: '{provider} / {model}',
+      pillInput: 'Input {input}',
+      pillCache: 'cache {hit}',
+      pillTools: 'tools {count} · {elapsed}',
+      pillToolsNone: 'no tools',
+      pillSep: ' · ',
       toolRunningUnnamed: 'a tool',
       hintTime: 'When the request was issued (local time)',
       hintTtft: 'Time from issuing the request to receiving its first token',
@@ -2059,6 +2078,63 @@ window.__ModuleLoader__.load({
         : t('liveWritingHint', { model: modelHintText(live, t), elapsed: span })
     }
 
+
+    /**
+     * The status pill's hint.
+     *
+     * While something is happening the pill answers with the same sentence its marker would give —
+     * the two views describe one request, and two phrasings would invite a search for a difference
+     * that does not exist.
+     *
+     * When idle the pill shows the newest finished request, and its five figures are already on
+     * screen. The hint therefore reports only what the pill cannot: when it ran, which model, how
+     * much was fed in, how well the cache did, and what the tools cost. Repeating a figure the
+     * reader can see would waste the single line available.
+     *
+     * A missing figure still gets a slot rather than being dropped. A dash says "the upstream did
+     * not report this", which is information; an absent segment says nothing and reads as if the
+     * plugin forgot to measure it.
+     */
+    function pillHint(live, base, t, now) {
+      if (live !== null) return liveMarkerHint(live, t)
+      if (base === null || base === undefined) return null
+      const parts = []
+      const at = numberOrNull(base.at)
+      /* The date only earns its width when the reading is not from today. */
+      const clock = at === null
+        ? t('none')
+        : (() => {
+            const date = new Date(at)
+            const pad = (value) => String(value).padStart(2, '0')
+            const time = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+            const midnight = new Date(now)
+            midnight.setHours(0, 0, 0, 0)
+            if (at >= midnight.getTime()) return time
+            return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`
+          })()
+      parts.push(t('pillLast', { clock }))
+      const model = typeof base.model === 'string' && base.model !== '' ? base.model : null
+      const provider = typeof base.provider === 'string' && base.provider !== '' ? base.provider : null
+      if (model !== null) {
+        parts.push(provider === null ? model : t('pillModel', { provider, model }))
+      }
+      parts.push(t('pillInput', { input: tokensExact(numberOrNull(base.context), t) }))
+      const hit = numberOrNull(base.cacheHit)
+      parts.push(t('pillCache', { hit: hit === null ? t('none') : `${(hit * 100).toFixed(1)}%` }))
+      const calls = numberOrNull(base.toolCalls)
+      const toolMs = numberOrNull(base.toolMs)
+      if (calls === null || calls === 0) {
+        parts.push(t('pillToolsNone'))
+      } else {
+        parts.push(
+          t('pillTools', {
+            count: calls,
+            elapsed: toolMs === null ? t('none') : `${(Math.max(0, toolMs) / 1000).toFixed(1)} s`,
+          }),
+        )
+      }
+      return parts.join(t('pillSep'))
+    }
 
     /**
      * The row-number hint, or an empty list when the row is not highlighted.
@@ -3932,6 +4008,9 @@ window.__ModuleLoader__.load({
       const tipContent = (() => {
         if (tipAnchor === null) return null
 
+        /* The status pill reports one request; see pillHint for what it adds to the drawer. */
+        if (tipAnchor === 'pill') return pillHint(live, derivedRows[0] ?? null, t, now)
+
         if (tipAnchor.startsWith('header:')) {
           const column = tipAnchor.slice('header:'.length)
           if (column === 'index') return indexHint(t)
@@ -4007,6 +4086,9 @@ window.__ModuleLoader__.load({
             'aria-haspopup': 'dialog',
             'aria-expanded': open,
             'aria-label': compactionLabel,
+            /* The pill explains itself on hover, the same way every drawer cell does. */
+            onMouseEnter: (event) => hint.enter('pill', event),
+            onMouseLeave: hint.leave,
             /* The active phase, so a test can observe it without reaching into the hooks. */
             'data-live-phase': live === null ? undefined : live.phase,
             /*
@@ -4040,6 +4122,8 @@ window.__ModuleLoader__.load({
                 ? undefined
                 : JSON.stringify({ context: live.context ?? null, cacheHit: live.cacheHit ?? null }),
             onClick: () => {
+              /* Opening the drawer supersedes the hint; two overlays at once would collide. */
+              hint.leave()
               setPinned((current) => !current)
             },
           },
