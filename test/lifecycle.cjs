@@ -4456,11 +4456,12 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         .replace('function pillHint(live, base, t, now)', 'return function (live, base, t, now)')
       try {
         return new Function(
-          'numberOrNull', 'liveMarkerHint', 'tokensExact', bodyText,
+          'numberOrNull', 'liveMarkerHint', 'tokensExact', 'h', bodyText,
         )(
           (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null),
           () => 'MARKER',
           (v) => (v === null || v === undefined ? '—' : String(Math.round(v))),
+          (type, props, ...children) => ({ type, props: props ?? {}, children }),
         )
       } catch {
         return null
@@ -4485,6 +4486,17 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     const today = new Date('2026-11-11T11:38:01+08:00').getTime()
     const yesterday = new Date('2026-11-10T21:26:32+08:00').getTime()
 
+    /* Flatten an element tree to the text a reader would see. */
+    const flat = (node) => {
+      if (node === null || node === undefined) return ''
+      if (typeof node === 'string') return node
+      if (Array.isArray(node)) return node.map(flat).join('')
+      if (typeof node === 'object' && Array.isArray(node.children)) {
+        return node.children.map(flat).join(' ')
+      }
+      return ''
+    }
+
     assert(
       'an active pill delegates to the marker sentence instead of restating it',
       /* Two phrasings for one request would invite a search for a difference that is not there. */
@@ -4498,18 +4510,37 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           context: 585_344, cacheHit: 0.999, toolCalls: 1, toolMs: 100,
         }, stubT, now)
         return (
-          out.includes('last 11:38:01') &&
-          out.includes('buddy/deepseek-v4.1-flash') &&
-          out.includes('in 585344') &&
-          out.includes('cache 99.9%') &&
-          out.includes('tools 1 0.1 s') &&
+          flat(out).includes('last 11:38:01') &&
+          flat(out).includes('buddy/deepseek-v4.1-flash') &&
+          flat(out).includes('in 585344') &&
+          flat(out).includes('cache 99.9%') &&
+          flat(out).includes('tools 1 0.1 s') &&
           /*
            * The five figures on the pill must NOT reappear here — the hint exists for what the
            * pill cannot show, and a one-line box has no room to waste.
            */
-          !/tok\/s/.test(out) &&
-          !/ tok\b/.test(out)
+          !/tok\/s/.test(flat(out)) &&
+          !/ tok\b/.test(flat(out))
         )
+      })(),
+    )
+    assert(
+      'the idle hint is exactly two lines, identity first and cost second',
+      /*
+       * Exactly two: a third line would be a grouping mistake. Identity first: the reader asks
+       * which request before asking what it cost.
+       */
+      (() => {
+        const out = build === null ? null : build(null, {
+          at: today, provider: 'buddy', model: 'm',
+          context: 1, cacheHit: 0.5, toolCalls: 1, toolMs: 100,
+        }, stubT, now)
+        if (out === null || typeof out !== 'object') return false
+        const rows = (out.children ?? []).filter((child) => typeof child === 'object')
+        if (rows.length !== 2) return false
+        const one = flat(rows[0])
+        const two = flat(rows[1])
+        return one.includes('last') && !one.includes('in ') && two.includes('in ') && !two.includes('last')
       })(),
     )
     assert(
@@ -4519,7 +4550,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           at: yesterday, provider: 'buddy', model: 'm',
           context: 1, cacheHit: 0.5, toolCalls: 0, toolMs: null,
         }, stubT, now)
-        return out.includes('last 11-10 21:26:32')
+        return flat(out).includes('last 11-10 21:26:32')
       })(),
     )
     assert(
@@ -4533,7 +4564,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           at: today, provider: 'trae', model: 'm',
           context: 370_683, cacheHit: null, toolCalls: 0, toolMs: null,
         }, stubT, now)
-        return out.includes('cache —') && out.includes('tools 0')
+        return flat(out).includes('cache —') && flat(out).includes('tools 0')
       })(),
     )
     assert(

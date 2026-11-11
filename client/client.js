@@ -144,11 +144,11 @@ window.__ModuleLoader__.load({
       pillLast: '上次请求 {clock}',
       pillModel: '{provider} / {model}',
       pillInput: '输入 {input}',
-      pillCache: '缓存 {hit}',
-      pillTools: '工具 {count} 次 {elapsed}',
-      pillToolsNone: '工具 0 次',
+      pillCache: '缓存命中 {hit}',
+      pillTools: '调用工具 {count} 次 {elapsed}',
+      pillToolsNone: '调用工具 0 次',
       /* One separator for every part, so the line reads as a list rather than a sentence. */
-      pillSep: ' · ',
+      pillSep: '  ·  ',
       toolRunningUnnamed: '工具',
       hintTime: '请求发出的时刻（本地时间）',
       hintTtft: '从发出到收到第一个 token 的耗时',
@@ -227,10 +227,10 @@ window.__ModuleLoader__.load({
       pillLast: 'Last request {clock}',
       pillModel: '{provider} / {model}',
       pillInput: 'Input {input}',
-      pillCache: 'cache {hit}',
-      pillTools: 'tools {count} · {elapsed}',
-      pillToolsNone: 'no tools',
-      pillSep: ' · ',
+      pillCache: 'cache hit {hit}',
+      pillTools: 'called {count} tools · {elapsed}',
+      pillToolsNone: 'called no tools',
+      pillSep: '  ·  ',
       toolRunningUnnamed: 'a tool',
       hintTime: 'When the request was issued (local time)',
       hintTtft: 'Time from issuing the request to receiving its first token',
@@ -702,6 +702,11 @@ window.__ModuleLoader__.load({
   position: fixed;
   z-index: 2147483100;
   max-width: 320px;
+  /*
+   * A floor as well as a ceiling: the idle hint is two lines whose width depends on the model
+   * name and the tool count, so without one the box would visibly resize between readings.
+   */
+  min-width: 240px;
   padding: 7px 9px;
   border-radius: var(--dsw-radius-sm);
   border: 1px solid var(--dsw-alias-border-l1, transparent);
@@ -2098,7 +2103,13 @@ window.__ModuleLoader__.load({
     function pillHint(live, base, t, now) {
       if (live !== null) return liveMarkerHint(live, t)
       if (base === null || base === undefined) return null
-      const parts = []
+      /*
+       * Two lines, split by meaning rather than by width: the first says which request and who
+       * served it, the second says what it cost. Letting the box wrap on its own put the break in
+       * the middle of a field, which reads as a mistake.
+       */
+      const identity = []
+      const cost = []
       const at = numberOrNull(base.at)
       /* The date only earns its width when the reading is not from today. */
       const clock = at === null
@@ -2112,28 +2123,40 @@ window.__ModuleLoader__.load({
             if (at >= midnight.getTime()) return time
             return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`
           })()
-      parts.push(t('pillLast', { clock }))
+      identity.push(t('pillLast', { clock }))
       const model = typeof base.model === 'string' && base.model !== '' ? base.model : null
       const provider = typeof base.provider === 'string' && base.provider !== '' ? base.provider : null
       if (model !== null) {
-        parts.push(provider === null ? model : t('pillModel', { provider, model }))
+        identity.push(provider === null ? model : t('pillModel', { provider, model }))
       }
-      parts.push(t('pillInput', { input: tokensExact(numberOrNull(base.context), t) }))
+      cost.push(t('pillInput', { input: tokensExact(numberOrNull(base.context), t) }))
       const hit = numberOrNull(base.cacheHit)
-      parts.push(t('pillCache', { hit: hit === null ? t('none') : `${(hit * 100).toFixed(1)}%` }))
+      cost.push(t('pillCache', { hit: hit === null ? t('none') : `${(hit * 100).toFixed(1)}%` }))
       const calls = numberOrNull(base.toolCalls)
       const toolMs = numberOrNull(base.toolMs)
       if (calls === null || calls === 0) {
-        parts.push(t('pillToolsNone'))
+        cost.push(t('pillToolsNone'))
       } else {
-        parts.push(
+        cost.push(
           t('pillTools', {
             count: calls,
             elapsed: toolMs === null ? t('none') : `${(Math.max(0, toolMs) / 1000).toFixed(1)} s`,
           }),
         )
       }
-      return parts.join(t('pillSep'))
+      const lineOne = identity.join(t('pillSep'))
+      const lineTwo = cost.join(t('pillSep'))
+      if (lineTwo === '') return lineOne
+      /*
+       * The same two-line body the index hint uses, so the drawer and the pill share one layout
+       * rule instead of each inventing line spacing.
+       */
+      return h(
+        'span',
+        { className: 'dsh-rum-tip-body' },
+        h('span', { className: 'dsh-rum-tip-line' }, lineOne),
+        h('span', { className: 'dsh-rum-tip-line' }, lineTwo),
+      )
     }
 
     /**
