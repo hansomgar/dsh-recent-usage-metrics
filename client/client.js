@@ -269,9 +269,14 @@ window.__ModuleLoader__.load({
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  /*
+   * These three numbers mirror the drawer row so the two rows can line up: the row insets 6px,
+   * gives its number column 18px, then leaves a 10px gap before the clock. The pill spends the
+   * same 34px before its own clock — icon slot included, since the status line has no number.
+   */
+  gap: 10px;
   max-width: 100%;
-  padding: 1px 8px;
+  padding: 1px 8px 1px 6px;
   border: none;
   border-radius: var(--dsw-radius-sm);
   background: 0 0;
@@ -286,6 +291,19 @@ window.__ModuleLoader__.load({
   flex: none;
   width: 14px;
   height: 14px;
+}
+/*
+ * The slot, not the glyph, is what aligns. All three markers — the bolt, the T and the
+ * compaction bars — sit in the same 18px box, centred, so swapping phases never shifts the
+ * clock column underneath it.
+ */
+.dsh-rum-trigger > svg,
+.dsh-rum-trigger > .dsh-rum-compact-anchor {
+  flex: none;
+  width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .dsh-rum-trigger:hover,
 .dsh-rum-trigger[aria-expanded="true"] {

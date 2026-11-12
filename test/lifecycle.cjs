@@ -606,7 +606,7 @@ assert(
 )
 assert(
   'the status pill is sized by padding + line-height, like the shipped pills',
-  /\.dsh-rum-trigger\s*\{[^}]*padding:\s*1px 8px;/s.test(styleEls[0].textContent) &&
+  /\.dsh-rum-trigger\s*\{[^}]*padding:\s*1px 8px 1px 6px;/s.test(styleEls[0].textContent) &&
     /\.dsh-rum-trigger\s*\{[^}]*line-height:\s*inherit;/s.test(styleEls[0].textContent) &&
     /\.dsh-rum-anchor\s*\{[^}]*line-height:\s*calc\(20px \+ var\(--dsh-content-font-delta-secondary, 0px\)\)/s.test(
       styleEls[0].textContent,
@@ -4733,6 +4733,49 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     assert(
       'the measurement skips the clock, or every published width would shift by one',
       /querySelectorAll\('\[data-metric\]:not\(\[data-metric="clock"\]\)'\)/.test(source),
+    )
+  }
+
+
+  /*
+   * The status line and the drawer row must line up column for column.
+   *
+   * Both spend the same distance before the clock: the drawer insets 6px, gives its number
+   * column 18px, then a 10px gap. The pill has no number, so its marker slot is the 18px, and
+   * the inset and gap match. Get any of the three wrong and the clock shifts by the difference.
+   */
+  {
+    const css = styleEls[0].textContent
+    const pick = (pattern) => {
+      const match = css.match(pattern)
+      return match === null ? null : match[1]
+    }
+    const trigger = css.slice(css.indexOf('.dsh-rum-trigger {'), css.indexOf('.dsh-rum-trigger svg'))
+    const row = css.slice(css.indexOf('.dsh-rum-row {'), css.indexOf('.dsh-rum-row +'))
+    assert(
+      'the pill insets 6px, matching the drawer row',
+      /padding:\s*1px 8px 1px 6px/.test(trigger),
+    )
+    assert(
+      'the pill gap is 10px, matching the drawer grid gap',
+      /gap:\s*10px/.test(trigger) && /gap:\s*10px/.test(row),
+    )
+    assert(
+      'every marker occupies the same 18px slot as the drawer number column',
+      /*
+       * The slot is what aligns, not the glyph: the bolt, the T and the compaction bars are
+       * three different drawings, and swapping phases must not move the clock underneath.
+       */
+      /\.dsh-rum-trigger\s*>\s*svg/.test(css) &&
+        /\.dsh-rum-trigger\s*>\s*\.dsh-rum-compact-anchor/.test(css) &&
+        (() => {
+          const slot = css.slice(css.indexOf('.dsh-rum-trigger > svg'))
+          return /width:\s*18px/.test(slot) && /justify-content:\s*center/.test(slot)
+        })(),
+    )
+    assert(
+      'the drawer number column is the same 18px',
+      /grid-template-columns:\s*18px/.test(css.replace(/\r/g, '')),
     )
   }
 
