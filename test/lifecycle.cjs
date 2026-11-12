@@ -587,7 +587,7 @@ assert(
    * "tok/s" is far narrower, so the computed column and the rendered cell disagree. The
    * drawer must therefore read the live boxes.
    */
-  /querySelectorAll\('\[data-metric\]:not\(\[data-metric="clock"\]\)'\)/.test(source) &&
+  /querySelectorAll\('\[data-metric\]'\)/.test(source) &&
     /getBoundingClientRect\(\)/.test(source) &&
     /--dsh-rum-col-ttft/.test(source) &&
     /setColumnWidths/.test(source),
@@ -4731,8 +4731,21 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
         /setClockWidth/.test(source),
     )
     assert(
-      'the measurement skips the clock, or every published width would shift by one',
-      /querySelectorAll\('\[data-metric\]:not\(\[data-metric="clock"\]\)'\)/.test(source),
+      'the clock sits outside the parts row, so the five figures are what get measured',
+      /*
+       * The drawer gives its clock its own grid column, so it has one gap on each side. Inside
+       * the parts row the clock would have one fewer gap on the right; since the drawer aligns
+       * its right edge to the pill's, that missing gap shifts every column on the left by 10px.
+       * Structure is the fix — no tuning of numbers would hold it.
+       */
+      (() => {
+        const partsRow = source.slice(source.indexOf("className: 'dsh-rum-parts'"))
+        const nextSibling = partsRow.slice(0, partsRow.indexOf('h(Tooltip'))
+        const clockInParts = nextSibling.includes("'data-metric': 'clock'")
+        const clockSibling = /dsh-rum-part dsh-rum-part-clock/.test(source)
+        const hasClockMetric = /'data-metric': 'clock'/.test(source)
+        return !clockInParts && clockSibling && hasClockMetric
+      })(),
     )
   }
 

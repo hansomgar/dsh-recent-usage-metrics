@@ -3921,11 +3921,8 @@ function pillHint(live, base, t, now) {
         const measure = () => {
           const host = partsRef.current
           if (host === null) return
-          /*
-           * Only the five figure columns are measured; the clock is a fixed 56px like the
-           * drawer's own, and including it would shift every published width by one slot.
-           */
-          const cells = host.querySelectorAll('[data-metric]:not([data-metric="clock"])')
+          /* The parts row holds exactly the five figures; the clock is a sibling now. */
+          const cells = host.querySelectorAll('[data-metric]')
           if (cells.length !== 5) return
           const widths = []
           for (const cell of cells) {
@@ -3934,7 +3931,7 @@ function pillHint(live, base, t, now) {
             if (rect.width <= 0) return
             widths.push(Math.round(rect.width * 100) / 100)
           }
-          const clock = host.querySelector('[data-metric="clock"]')
+          const clock = triggerRef.current?.querySelector('[data-metric="clock"]') ?? null
           if (clock !== null) {
             const clockRect = clock.getBoundingClientRect()
             if (clockRect.width > 0) {
@@ -4266,22 +4263,27 @@ function pillHint(live, base, t, now) {
                     (live.phase === 'compacting' ? '' : ' dsh-rum-still'),
                 })
               : h(BoltIcon, { className: 'dsh-rum-bolt' }),
+          /*
+           * The clock is a sibling of the marker, NOT a cell inside the parts row.
+           *
+           * The drawer gives its clock its own grid column, so it has one gap on each side.
+           * Inside the parts row it would have only the gaps between figures — one fewer on the
+           * right — and since the drawer aligns its right edge to the pill's, that missing gap
+           * shifts every column on the left by exactly 10px. Mirroring the structure is what
+           * makes the two rows line up; no amount of tuning the numbers would.
+           */
+          compactingPhase && compaction !== null
+            ? null
+            : h(
+                'span',
+                { className: 'dsh-rum-part dsh-rum-part-clock', 'data-metric': 'clock' },
+                h('span', { className: 'dsh-rum-num' }, clockText(current?.at)),
+              ),
           compactingPhase && compaction !== null
             ? h(CompactionReading, { compaction, phase: live.phase, now, t })
             : h(
             'span',
             { className: 'dsh-rum-parts', ref: partsRef },
-            /*
-             * The clock, in the position the drawer gives it, so the two read as one table.
-             * It is the moment the request BEGAN — the same fact the drawer column reports —
-             * not the current time: a column that means one thing in the drawer and another
-             * here would make alignment a source of confusion rather than of order.
-             */
-            h(
-              'span',
-              { className: 'dsh-rum-part dsh-rum-part-clock', 'data-metric': 'clock' },
-              h('span', { className: 'dsh-rum-num' }, clockText(current?.at)),
-            ),
             h(
               'span',
               { className: 'dsh-rum-part', 'data-metric': 'ttft' },
