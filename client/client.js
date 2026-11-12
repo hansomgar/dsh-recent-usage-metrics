@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
      * and a stale value here is exactly what the header tooltip exists to expose — so it has to
      * be visible in the file that actually ships.
      */
-    const VERSION = '0.7.6'
+    const VERSION = '0.7.7'
 
     const MAX_ROWS = 10
     /** Shipped Chat settings namespace and field the two native levels persist through. */
@@ -306,8 +306,14 @@ window.__ModuleLoader__.load({
 }
 /*
  * The slot, not the glyph, is what aligns. All three markers — the bolt, the T and the
- * compaction bars — sit in the same 18px box, centred, so swapping phases never shifts the
- * clock column underneath it.
+ * compaction bars — sit in the same 18px box, so swapping phases never shifts the clock
+ * column underneath it.
+ *
+ * The glyph hugs the LEFT of that slot, matching the drawer: its number column is a flex box
+ * with justify-content: flex-start, and the markers it shows (the T, the compaction bars) hug
+ * the same edge. Centring here instead would push the icon 2px right — the slot would still
+ * line up while the drawing inside it did not, which is the same trap the clock column fell
+ * into.
  */
 .dsh-rum-trigger > svg,
 .dsh-rum-trigger > .dsh-rum-compact-anchor {
@@ -315,7 +321,7 @@ window.__ModuleLoader__.load({
   width: 18px;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .dsh-rum-trigger:hover,
 .dsh-rum-trigger[aria-expanded="true"] {

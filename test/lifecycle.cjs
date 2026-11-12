@@ -4774,17 +4774,24 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       /gap:\s*10px/.test(trigger) && /gap:\s*10px/.test(row),
     )
     assert(
-      'every marker occupies the same 18px slot as the drawer number column',
+      'every marker sits where the drawer number sits, inside an 18px slot',
       /*
-       * The slot is what aligns, not the glyph: the bolt, the T and the compaction bars are
-       * three different drawings, and swapping phases must not move the clock underneath.
+       * Two things have to match, not one: the slot AND where the drawing sits inside it.
+       * The clock column already taught this — identical boxes, different text origin, and the
+       * eye reads the offset. Here the drawer number column is flex-start, so the marker hugs
+       * the left edge too; centring would push it 2px right inside a slot that still measured
+       * correct.
        */
-      /\.dsh-rum-trigger\s*>\s*svg/.test(css) &&
-        /\.dsh-rum-trigger\s*>\s*\.dsh-rum-compact-anchor/.test(css) &&
-        (() => {
-          const slot = css.slice(css.indexOf('.dsh-rum-trigger > svg'))
-          return /width:\s*18px/.test(slot) && /justify-content:\s*center/.test(slot)
-        })(),
+      (() => {
+        const slot = css.slice(css.indexOf('.dsh-rum-trigger > svg'))
+        const slotBlock = slot.slice(0, slot.indexOf('}'))
+        const indexBlock = css.slice(css.indexOf('.dsh-rum-index {'), css.indexOf('.dsh-rum-index {') + 200)
+        return (
+          /width:\s*18px/.test(slotBlock) &&
+          /justify-content:\s*flex-start/.test(slotBlock) &&
+          /justify-content:\s*flex-start/.test(indexBlock)
+        )
+      })(),
     )
     assert(
       'the drawer number column is the same 18px',
