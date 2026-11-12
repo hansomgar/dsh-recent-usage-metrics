@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
      * and a stale value here is exactly what the header tooltip exists to expose — so it has to
      * be visible in the file that actually ships.
      */
-    const VERSION = '0.7.3'
+    const VERSION = '0.7.6'
 
     const MAX_ROWS = 10
     /** Shipped Chat settings namespace and field the two native levels persist through. */
@@ -353,17 +353,19 @@ window.__ModuleLoader__.load({
 }
 /*
  * The clock sits where the drawer puts it, at the same 56px, so the two rows line up column
- * for column. It is a fixed width because a clock always has one: no jitter to absorb.
+ * for column.
+ *
+ * It also has to be aligned the same way INSIDE that slot. The drawer clock is a plain grid
+ * child with text-align: left, so its digits hug the left edge; this one is an inline-flex
+ * cell, whose default is to centre. With identical slots but different alignment, the two
+ * read as offset by half a column even though every box matches to the pixel — measured at
+ * left 562.3 / right 618.3 on both sides, yet the text landed ~14px apart.
  */
 .dsh-rum-part-clock {
   flex: none;
   width: 56px;
-}
-/* The drawer aligns its clock to the left; match it, or the two rows start different. */
-.dsh-rum-part-clock .dsh-rum-num {
-  display: inline-block;
-  width: 100%;
-  text-align: right;
+  justify-content: flex-start;
+  text-align: left;
 }
 .dsh-rum-tilde {
   /* Reserved unconditionally; only its paint toggles, so it can never reflow. */

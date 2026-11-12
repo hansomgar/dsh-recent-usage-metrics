@@ -4824,6 +4824,37 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     )
   }
 
+
+  /*
+   * Matching boxes are not enough: the text inside them must also be aligned the same way.
+   *
+   * Measured on the live page, both clock slots sat at left 562.3 / right 618.3 — identical to
+   * the tenth of a pixel — yet the times looked offset. The drawer clock is a plain grid child
+   * with text-align: left; the pill clock is an inline-flex cell whose default is to centre.
+   * Same box, different text origin, and the eye reads the text, not the box.
+   */
+  {
+    const css = styleEls[0].textContent
+    assert(
+      "the pill clock aligns its text like the drawer clock",
+      /* Both are left-aligned; an inline-flex cell needs justify-content, since text-align
+       * alone does nothing to a flex child. */
+      (() => {
+        const block = css.slice(css.indexOf('.dsh-rum-part-clock {'), css.indexOf('.dsh-rum-part-clock {') + 260)
+        return /justify-content:\s*flex-start/.test(block) && /text-align:\s*left/.test(block)
+      })(),
+    )
+    assert(
+      'the drawer clock is left-aligned too, so the pair stays in step',
+      /\.dsh-rum-clock\s*\{[^}]*text-align:\s*left/.test(css),
+    )
+    assert(
+      'the clock slot keeps the width the drawer column repeats',
+      /\.dsh-rum-part-clock\s*\{[^}]*width:\s*56px/.test(css) &&
+        /var\(--dsh-rum-col-clock, 56px\)/.test(css),
+    )
+  }
+
   /* Disposal                                                          */
   /* ---------------------------------------------------------------- */
 
