@@ -587,7 +587,7 @@ assert(
    * "tok/s" is far narrower, so the computed column and the rendered cell disagree. The
    * drawer must therefore read the live boxes.
    */
-  /querySelectorAll\('\[data-metric\]'\)/.test(source) &&
+  /querySelectorAll\('\[data-metric\]:not\(\[data-metric="clock"\]\)'\)/.test(source) &&
     /getBoundingClientRect\(\)/.test(source) &&
     /--dsh-rum-col-ttft/.test(source) &&
     /setColumnWidths/.test(source),
@@ -837,8 +837,14 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
   let trigger = triggerOf(statusTree)
   assert('Geek renders the status trigger', trigger !== undefined)
   assert(
-    'empty history shows placeholders',
-    normalize(textOf(trigger)).replace(/\s+/g, ' ') === '-- s -- tok/s -- tok -- s -- tok/s',
+    'empty history shows placeholders, clock first',
+    /*
+     * The clock joins the five slots, so the placeholder row gains one: a dash for the
+     * unknown moment, then the five figure dashes. */
+    (() => {
+      const parts = normalize(textOf(trigger)).replace(/\s+/g, ' ').split(' ')
+      return parts[0] === '—' && parts.slice(1).join(' ') === '-- s -- tok/s -- tok -- s -- tok/s'
+    })(),
   )
 
   /* Exact metrics from a settled step: 1.0s → 3.3s first token, end 5.6s, 1024 tokens. */
@@ -878,8 +884,15 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
   trigger = triggerOf(statusTree)
   assert(
-    'the status line reads "2.3 s 445 tok/s 1024 tok 4.6 s 223 tok/s" with no dots',
-    normalize(textOf(trigger)) === '2.3 s 445 tok/s 1024 tok 4.6 s 223 tok/s',
+    'the status line leads with the clock, then the five figures with no dots',
+    /*
+     * The clock is whatever the step started at; only its shape is fixed, since pinning the
+     * literal would tie the test to a timezone. */
+    (() => {
+      const text = normalize(textOf(trigger))
+      const match = text.match(/^(\d\d:\d\d:\d\d) (.*)$/)
+      return match !== null && match[2] === '2.3 s 445 tok/s 1024 tok 4.6 s 223 tok/s'
+    })(),
   )
   assert(
     'there is exactly one space between each number and its unit',
@@ -892,9 +905,9 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     (() => {
       const cells = findAll(trigger, (el) => el.props['data-metric'] !== undefined)
       return (
-        cells.length === 5 &&
+        cells.length === 6 &&
         cells.map((cell) => cell.props['data-metric']).join(',') ===
-          'ttft,speed,tokens,total,amortized' &&
+          'clock,ttft,speed,tokens,total,amortized' &&
         cells.every((cell) => findAll(cell, (el) => el.props.className === 'dsh-rum-num').length === 1)
       )
     })(),
@@ -4680,6 +4693,46 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
           /\.dsh-rum-tip\[data-wide="true"\]\s*\{[^}]*min-width:\s*240px/.test(css)
         )
       })(),
+    )
+  }
+
+
+  /*
+   * The clock column, and the alignment it exists for.
+   *
+   * The status line now starts with the moment the request BEGAN, in the position the drawer
+   * gives that same fact. A column meaning one thing above and another below would make
+   * alignment a source of confusion — so it reports the start, not the current time.
+   */
+  {
+    const css = styleEls[0].textContent
+    assert(
+      "the status line carries a clock slot in the drawer position",
+      /'data-metric': 'clock'/.test(source) &&
+        /* First child of the parts row, before the first figure. */
+        source.indexOf("'data-metric': 'clock'") < source.indexOf("'data-metric': 'ttft'"),
+    )
+    assert(
+      'the clock reports the reading start, not the current time',
+      /*
+       * `current.at` is the step start, the same field the drawer clock prints. Reaching for a
+       * ticking clock here would make one column mean two things.
+       */
+      /clockText\(current\?\.at\)/.test(source) && !/clockText\(Date\.now\(\)\)/.test(source),
+    )
+    assert(
+      "the drawer clock column follows the measured pill width",
+      /*
+       * 56px is only the fallback: the drawer repeats whatever the status line measured, so the
+       * two rows line up to the pixel rather than to a guess.
+       */
+      /var\(--dsh-rum-col-clock, 56px\)/.test(css) &&
+        /'--dsh-rum-col-clock'/.test(source) &&
+        /setClockWidth/.test(source),
+    )
+    assert(
+      'the measurement skips the clock, or every published width would shift by one',
+      /querySelectorAll\('\[data-metric\]:not\(\[data-metric="clock"\]\)'\)/.test(source),
     )
   }
 

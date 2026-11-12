@@ -321,6 +321,20 @@ window.__ModuleLoader__.load({
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/*
+ * The clock sits where the drawer puts it, at the same 56px, so the two rows line up column
+ * for column. It is a fixed width because a clock always has one: no jitter to absorb.
+ */
+.dsh-rum-part-clock {
+  flex: none;
+  width: 56px;
+}
+/* The drawer aligns its clock to the left; match it, or the two rows start different. */
+.dsh-rum-part-clock .dsh-rum-num {
+  display: inline-block;
+  width: 100%;
+  text-align: right;
+}
 .dsh-rum-tilde {
   /* Reserved unconditionally; only its paint toggles, so it can never reflow. */
   flex: none;
@@ -459,7 +473,12 @@ window.__ModuleLoader__.load({
    */
   grid-template-columns:
     18px
-    56px
+    /*
+     * The clock column repeats the pill's measured width, so a drawer row sits exactly under
+     * the status line it describes. 56px is only the fallback for the frame before measurement
+     * lands, and for a detached tree.
+     */
+    var(--dsh-rum-col-clock, 56px)
     var(--dsh-rum-col-ttft, calc(4.5ch + 2ch))
     var(--dsh-rum-col-speed, calc(4.5ch + 6ch))
     var(--dsh-rum-col-tokens, calc(5.5ch + 4ch))
@@ -3745,6 +3764,8 @@ function pillHint(live, base, t, now) {
        * than the `ch` unit itself.
        */
       const [columnWidths, setColumnWidths] = useState(null)
+      /* The clock column is measured on its own: the drawer repeats it at the same width. */
+      const [clockWidth, setClockWidth] = useState(null)
 
       /* Click only: the drawer opens on the pill and closes on it, Escape, or outside. */
       const open = geek && pinned
@@ -3882,7 +3903,11 @@ function pillHint(live, base, t, now) {
         const measure = () => {
           const host = partsRef.current
           if (host === null) return
-          const cells = host.querySelectorAll('[data-metric]')
+          /*
+           * Only the five figure columns are measured; the clock is a fixed 56px like the
+           * drawer's own, and including it would shift every published width by one slot.
+           */
+          const cells = host.querySelectorAll('[data-metric]:not([data-metric="clock"])')
           if (cells.length !== 5) return
           const widths = []
           for (const cell of cells) {
@@ -3890,6 +3915,16 @@ function pillHint(live, base, t, now) {
             // getBoundingClientRect is 0 in a detached/hidden tree; keep the CSS fallback.
             if (rect.width <= 0) return
             widths.push(Math.round(rect.width * 100) / 100)
+          }
+          const clock = host.querySelector('[data-metric="clock"]')
+          if (clock !== null) {
+            const clockRect = clock.getBoundingClientRect()
+            if (clockRect.width > 0) {
+              setClockWidth((previous) => {
+                const next = Math.round(clockRect.width * 100) / 100
+                return previous === next ? previous : next
+              })
+            }
           }
           setColumnWidths((previous) => {
             if (previous !== null && previous.every((value, index) => value === widths[index])) {
@@ -4218,6 +4253,17 @@ function pillHint(live, base, t, now) {
             : h(
             'span',
             { className: 'dsh-rum-parts', ref: partsRef },
+            /*
+             * The clock, in the position the drawer gives it, so the two read as one table.
+             * It is the moment the request BEGAN — the same fact the drawer column reports —
+             * not the current time: a column that means one thing in the drawer and another
+             * here would make alignment a source of confusion rather than of order.
+             */
+            h(
+              'span',
+              { className: 'dsh-rum-part dsh-rum-part-clock', 'data-metric': 'clock' },
+              h('span', { className: 'dsh-rum-num' }, clockText(current?.at)),
+            ),
             h(
               'span',
               { className: 'dsh-rum-part', 'data-metric': 'ttft' },
@@ -4281,6 +4327,7 @@ function pillHint(live, base, t, now) {
                     ...(columnWidths === null
                       ? null
                       : {
+                          ...(clockWidth === null ? null : { '--dsh-rum-col-clock': `${clockWidth}px` }),
                           '--dsh-rum-col-ttft': `${columnWidths[0]}px`,
                           '--dsh-rum-col-speed': `${columnWidths[1]}px`,
                           '--dsh-rum-col-tokens': `${columnWidths[2]}px`,
