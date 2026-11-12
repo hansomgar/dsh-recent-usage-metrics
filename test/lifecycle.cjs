@@ -4774,22 +4774,26 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       /gap:\s*10px/.test(trigger) && /gap:\s*10px/.test(row),
     )
     assert(
-      'every marker sits where the drawer number sits, inside an 18px slot',
+      'every marker is the size the drawer number cell uses, with an optical nudge',
       /*
-       * Two things have to match, not one: the slot AND where the drawing sits inside it.
-       * The clock column already taught this — identical boxes, different text origin, and the
-       * eye reads the offset. Here the drawer number column is flex-start, so the marker hugs
-       * the left edge too; centring would push it 2px right inside a slot that still measured
-       * correct.
+       * 11px, the same drawing size as the drawer number cell. An earlier version tried to give
+       * the marker an 18px slot with the glyph inside it, but wrote the slot and the glyph as two
+       * rules with the same selector — the later width won and the box simply became 11px. One
+       * element cannot be both slot and content.
+       *
+       * The -1px is optical: a plain drawer row shows a DIGIT, which starts at the very edge of
+       * its cell, while the bolt is an svg whose viewBox leaves 3.4 units of空白 before the path.
+       * Pulling the box left puts the ink, not the box, under the same edge.
        */
       (() => {
-        const slot = css.slice(css.indexOf('.dsh-rum-trigger > svg'))
-        const slotBlock = slot.slice(0, slot.indexOf('}'))
-        const indexBlock = css.slice(css.indexOf('.dsh-rum-index {'), css.indexOf('.dsh-rum-index {') + 200)
+        const slot = css.slice(css.indexOf('.dsh-rum-trigger > svg,'))
+        const slotBlock = slot.slice(0, slot.indexOf('.dsh-rum-trigger:hover'))
         return (
-          /width:\s*18px/.test(slotBlock) &&
-          /justify-content:\s*flex-start/.test(slotBlock) &&
-          /justify-content:\s*flex-start/.test(indexBlock)
+          /width:\s*11px/.test(slotBlock) &&
+          /height:\s*11px/.test(slotBlock) &&
+          /margin-left:\s*-1px/.test(slotBlock) &&
+          /* Exactly one width, so no later rule can silently override it. */
+          (slotBlock.match(/width:\s*[\d.]+px/g) || []).length === 1
         )
       })(),
     )

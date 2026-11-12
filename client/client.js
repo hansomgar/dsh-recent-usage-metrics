@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
      * and a stale value here is exactly what the header tooltip exists to expose — so it has to
      * be visible in the file that actually ships.
      */
-    const VERSION = '0.7.7'
+    const VERSION = '0.7.9'
 
     const MAX_ROWS = 10
     /** Shipped Chat settings namespace and field the two native levels persist through. */
@@ -318,10 +318,22 @@ window.__ModuleLoader__.load({
 .dsh-rum-trigger > svg,
 .dsh-rum-trigger > .dsh-rum-compact-anchor {
   flex: none;
-  width: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
+  /*
+   * 11px, the same size the drawer number cell uses for its own markers.
+   *
+   * An earlier version tried to give this an 18px slot with the glyph inside it, but wrote
+   * that slot and the glyph as two rules with the SAME selector — so the later width won and
+   * the box simply became 11px. One element cannot be both slot and content; the width here
+   * is the drawing, and the space around it comes from the trigger padding and gap.
+   *
+   * The 1px nudge is optical, not structural. A plain row shows a DIGIT in the drawer, and a
+   * digit starts at the very edge of its cell; the bolt is an svg whose viewBox has 3.4 units
+   * of empty space before the path begins, so its ink sits slightly right of where a digit
+   * would. Pulling the svg 1px left puts the INK, not the box, under the same edge.
+   */
+  width: 11px;
+  height: 11px;
+  margin-left: -1px;
 }
 .dsh-rum-trigger:hover,
 .dsh-rum-trigger[aria-expanded="true"] {
