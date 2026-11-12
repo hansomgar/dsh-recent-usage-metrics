@@ -4792,6 +4792,38 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     )
   }
 
+
+  /*
+   * The header title reports the build.
+   *
+   * The drawer has been revised many times, and a stale bundle behaves exactly like a fresh one
+   * right up until the pixels are measured. Naming the version on hover is the cheapest way to
+   * tell them apart — and it has to come from the shipped source, since the page cannot read
+   * package.json.
+   */
+  {
+    const version = /const VERSION = '(\d+\.\d+\.\d+)'/.exec(source)
+    assert(
+      'the bundle carries its own version',
+      version !== null,
+    )
+    assert(
+      'that version matches package.json',
+      /*
+       * A drift here would make the header lie about which build is loaded, which is the one
+       * thing it exists to answer.
+       */
+      version !== null &&
+        version[1] ===
+          JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'package.json'), 'utf8')).version,
+    )
+    assert(
+      'the header title shows the version on hover',
+      /onMouseEnter: \(event\) => hint\.enter\('head:version', event\)/.test(source) &&
+        /if \(tipAnchor === 'head:version'\) return t\('versionHint', \{ version: VERSION \}\)/.test(source),
+    )
+  }
+
   /* Disposal                                                          */
   /* ---------------------------------------------------------------- */
 

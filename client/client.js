@@ -51,6 +51,15 @@ window.__ModuleLoader__.load({
     /** Durable Geek flag. The shipped preference keeps its own two values. */
     const MODE_KEY = 'dsh.recentUsageMetrics.mode.v1'
     /** Drawer capacity: the newest settled requests it lists. */
+    /*
+     * The version this bundle was built from.
+     *
+     * Kept in the source rather than read from package.json: the page has no filesystem access,
+     * and a stale value here is exactly what the header tooltip exists to expose — so it has to
+     * be visible in the file that actually ships.
+     */
+    const VERSION = '0.7.3'
+
     const MAX_ROWS = 10
     /** Shipped Chat settings namespace and field the two native levels persist through. */
     const CHAT_NS = 'ui-chat'
@@ -85,6 +94,8 @@ window.__ModuleLoader__.load({
       approxTokensUnit: '~{value} tok',
       none: '—',
       drawerTitle: '最近请求指标',
+      /* Which build is loaded. A stale bundle is otherwise indistinguishable from a fresh one. */
+      versionHint: '版本 {version}',
       drawerCount: '最近 {count} 条',
       drawerEmpty: '还没有完成的请求。发一条消息后，它的指标会出现在这里。',
       drawerLive: '生成中',
@@ -184,6 +195,7 @@ window.__ModuleLoader__.load({
       approxTokensUnit: '~{value} tok',
       none: '—',
       drawerTitle: 'Recent request metrics',
+      versionHint: 'version {version}',
       drawerCount: 'Last {count}',
       drawerEmpty: 'No completed requests yet. Send a message and its metrics appear here.',
       drawerLive: 'Streaming',
@@ -4135,6 +4147,9 @@ function pillHint(live, base, t, now) {
       const tipContent = (() => {
         if (tipAnchor === null) return null
 
+        /* The header title reports the build, which is what makes a stale bundle visible. */
+        if (tipAnchor === 'head:version') return t('versionHint', { version: VERSION })
+
         /* The status pill reports one request; see pillHint for what it adds to the drawer. */
         if (tipAnchor === 'pill') return pillHint(live, derivedRows[0] ?? null, t, now)
 
@@ -4361,7 +4376,17 @@ function pillHint(live, base, t, now) {
                 { className: 'dsh-rum-head' },
                 h(
                   'span',
-                  { className: 'dsh-rum-head-title' },
+                  {
+                    className: 'dsh-rum-head-title',
+                    /*
+                     * Shows which build is loaded. The drawer has been revised many times and a
+                     * stale bundle looks exactly like a fresh one, so this is the cheapest way to
+                     * tell them apart without opening the page source.
+                     */
+                    onMouseEnter: (event) => hint.enter('head:version', event),
+                    onMouseLeave: hint.leave,
+                    'data-hint': 'true',
+                  },
                   h(BoltIcon, { className: 'dsh-rum-bolt' }),
                   t('drawerTitle'),
                 ),
