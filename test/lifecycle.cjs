@@ -4774,25 +4774,25 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       /gap:\s*10px/.test(trigger) && /gap:\s*10px/.test(row),
     )
     assert(
-      'every marker is the size the drawer number cell uses, with an optical nudge',
+      'every marker is 11px with measured offsets, so the drawing lands where the number does',
       /*
-       * 11px, the same drawing size as the drawer number cell. An earlier version tried to give
-       * the marker an 18px slot with the glyph inside it, but wrote the slot and the glyph as two
-       * rules with the same selector — the later width won and the box simply became 11px. One
-       * element cannot be both slot and content.
+       * Measured, not guessed: the drawer is right-aligned to the pill and its number column is
+       * 18px against this marker's 11px, so the 7px difference is absorbed on the LEFT. The
+       * drawer number started at 946.8 and the icon at 953.8 — a 7px gap that no amount of
+       * matching widths would close, because the widths were never the problem.
        *
-       * The -1px is optical: a plain drawer row shows a DIGIT, which starts at the very edge of
-       * its cell, while the bolt is an svg whose viewBox leaves 3.4 units of空白 before the path.
-       * Pulling the box left puts the ink, not the box, under the same edge.
+       * Shifting left by 7px moves the drawing; the matching right margin gives that space back,
+       * so the clock stays at 974.8 on both sides.
        */
       (() => {
         const slot = css.slice(css.indexOf('.dsh-rum-trigger > svg,'))
-        const slotBlock = slot.slice(0, slot.indexOf('.dsh-rum-trigger:hover'))
+        const slotBlock = slot.slice(0, slot.indexOf('}', slot.indexOf('margin-right')))
         return (
           /width:\s*11px/.test(slotBlock) &&
           /height:\s*11px/.test(slotBlock) &&
-          /margin-left:\s*-1px/.test(slotBlock) &&
-          /* Exactly one width, so no later rule can silently override it. */
+          /margin-left:\s*-8px/.test(slotBlock) &&
+          /margin-right:\s*7px/.test(slotBlock) &&
+          /* One width only, so no later rule can silently override it. */
           (slotBlock.match(/width:\s*[\d.]+px/g) || []).length === 1
         )
       })(),
