@@ -58,7 +58,7 @@ window.__ModuleLoader__.load({
      * and a stale value here is exactly what the header tooltip exists to expose — so it has to
      * be visible in the file that actually ships.
      */
-    const VERSION = '0.8.1'
+    const VERSION = '0.8.2'
 
     const MAX_ROWS = 10
     /** Shipped Chat settings namespace and field the two native levels persist through. */
@@ -282,13 +282,17 @@ window.__ModuleLoader__.load({
   display: inline-flex;
   align-items: center;
   /*
-   * These three numbers mirror the drawer row so the two rows can line up: the row insets 6px,
-   * gives its number column 18px, then leaves a 10px gap before the clock. The pill spends the
-   * same 34px before its own clock — icon slot included, since the status line has no number.
+   * The gap mirrors the drawer grid so the clock columns line up.
+   *
+   * The left padding is 16px, not the row's 6px. The icon carries margin-left: -8px to sit
+   * under the drawer number, and that margin would otherwise eat the entire gutter — the
+   * pill's background had nothing on its left while 8px sat on its right. Padding the gutter
+   * first and pulling from it afterwards keeps both: the pill widens by the extra 10px, its
+   * right edge is anchored, so it simply extends further left and the icon stays put.
    */
   gap: 10px;
   max-width: 100%;
-  padding: 1px 8px 1px 6px;
+  padding: 1px 8px 1px 16px;
   border: none;
   border-radius: var(--dsw-radius-sm);
   background: 0 0;

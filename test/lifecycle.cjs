@@ -606,7 +606,7 @@ assert(
 )
 assert(
   'the status pill is sized by padding + line-height, like the shipped pills',
-  /\.dsh-rum-trigger\s*\{[^}]*padding:\s*1px 8px 1px 6px;/s.test(styleEls[0].textContent) &&
+  /\.dsh-rum-trigger\s*\{[^}]*padding:\s*1px 8px 1px 16px;/s.test(styleEls[0].textContent) &&
     /\.dsh-rum-trigger\s*\{[^}]*line-height:\s*inherit;/s.test(styleEls[0].textContent) &&
     /\.dsh-rum-anchor\s*\{[^}]*line-height:\s*calc\(20px \+ var\(--dsh-content-font-delta-secondary, 0px\)\)/s.test(
       styleEls[0].textContent,
@@ -4766,8 +4766,18 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     const trigger = css.slice(css.indexOf('.dsh-rum-trigger {'), css.indexOf('.dsh-rum-trigger svg'))
     const row = css.slice(css.indexOf('.dsh-rum-row {'), css.indexOf('.dsh-rum-row +'))
     assert(
-      'the pill insets 6px, matching the drawer row',
-      /padding:\s*1px 8px 1px 6px/.test(trigger),
+      'the pill keeps a real left gutter while its icon sits under the drawer number',
+      /*
+       * The icon carries margin-left: -8px to land under the number column, and that margin
+       * would otherwise consume the whole gutter — the background had nothing on its left
+       * while 8px sat on its right.
+       *
+       * Padding the gutter first and pulling from it afterwards keeps both: the pill widens by
+       * the extra 10px, its right edge is anchored, so it extends further left and the icon
+       * does not move at all.
+       */
+      /padding:\s*1px 8px 1px 16px/.test(trigger) &&
+        /margin-left:\s*-8px/.test(css.slice(css.indexOf('.dsh-rum-trigger > svg,')))
     )
     assert(
       'the pill gap is 10px, matching the drawer grid gap',
